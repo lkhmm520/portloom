@@ -44,6 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Render Compose configurations
         run: |
+          cp .env.example .env
           docker compose --env-file .env.example -f deploy/server/docker-compose.yml config --quiet
           docker compose --env-file .env.example -f deploy/agent/docker-compose.yml config --quiet
       - name: Build server image

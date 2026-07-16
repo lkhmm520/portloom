@@ -1,0 +1,17 @@
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts && npm audit
+COPY docs ./docs
+COPY examples ./examples
+COPY scripts ./scripts
+ARG DOCS_BASE=/
+ARG DOCS_ORIGIN=https://docs.961121.xyz/
+ENV DOCS_BASE=${DOCS_BASE} DOCS_ORIGIN=${DOCS_ORIGIN} DOCS_LAST_UPDATED=false
+RUN npm run docs:build
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+COPY deploy/docs/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /src/docs/.vitepress/dist /usr/share/nginx/html
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1

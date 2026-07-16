@@ -1,0 +1,37 @@
+name: portloom-agents
+x-agent-common: &agent-common
+  image: ${PORTLOOM_AGENT_IMAGE:-ghcr.io/lkhmm520/portloom-agent:latest}
+  restart: unless-stopped
+  network_mode: host
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+    - /home/tunnel/.ssh:size=1m,uid=65532,gid=65532,mode=0700
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+services:
+  web:
+    <<: *agent-common
+    container_name: portloom-agent-web
+    env_file: [agent-web.env]
+    environment:
+      TM_AGENT_STATE_PATH: /data/agent.json
+      TM_SSH_IDENTITY_FILE: /run/secrets/ssh_private_key
+      TM_SSH_KNOWN_HOSTS_FILE: /etc/ssh/ssh_known_hosts
+    volumes:
+      - ./data/web:/data
+      - ./secrets/id_ed25519:/run/secrets/ssh_private_key:ro
+      - ./secrets/known_hosts:/etc/ssh/ssh_known_hosts:ro
+  media:
+    <<: *agent-common
+    container_name: portloom-agent-media
+    env_file: [agent-media.env]
+    environment:
+      TM_AGENT_STATE_PATH: /data/agent.json
+      TM_SSH_IDENTITY_FILE: /run/secrets/ssh_private_key
+      TM_SSH_KNOWN_HOSTS_FILE: /etc/ssh/ssh_known_hosts
+    volumes:
+      - ./data/media:/data
+      - ./secrets/id_ed25519:/run/secrets/ssh_private_key:ro
+      - ./secrets/known_hosts:/etc/ssh/ssh_known_hosts:ro

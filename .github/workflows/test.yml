@@ -1,29 +1,22 @@
 name: test
-
 on:
   push:
   pull_request:
-
 permissions:
   contents: read
-
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   go:
     name: Go and Web checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24.x'
-          cache: true
-      - name: Download modules
-        run: go mod download
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version: '1.24.x', cache: true }
+      - run: go mod download
       - name: Verify formatting
         run: make fmt-check
       - name: Vet
@@ -33,21 +26,46 @@ jobs:
       - name: Check dependency-free Web assets
         run: make web-check
       - name: Build binaries
-        run: make build VERSION=${GITHUB_SHA::12}
+        run: make build VERSION="${GITHUB_SHA::12}"
+
+  docs:
+    name: Bilingual documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: Audit complete documentation dependency surface
+        run: npm audit
+      - name: Build documentation
+        env: { DOCS_BASE: /portloom/ }
+        run: npm run docs:build
 
   containers:
     name: Container and Compose checks
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: go
+    timeout-minutes: 25
+    needs: [go, docs]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Render Compose configurations
         run: |
           cp .env.example .env
           docker compose --env-file .env.example -f deploy/server/docker-compose.yml config --quiet
           docker compose --env-file .env.example -f deploy/agent/docker-compose.yml config --quiet
-      - name: Build server image
-        run: docker build --build-arg VERSION=${GITHUB_SHA::12} -f Dockerfile.server -t portloom-server:test .
-      - name: Build agent image
-        run: docker build --build-arg VERSION=${GITHUB_SHA::12} -f Dockerfile.agent -t portloom-agent:test .
+          docker compose -f deploy/docs/docker-compose.yml config --quiet
+          cp examples/server.env.example examples/server.env
+          cp examples/agent.env.example examples/agent.env
+          cp examples/agent-web.env.example examples/agent-web.env
+          cp examples/agent-media.env.example examples/agent-media.env
+          docker compose --env-file examples/server.env -f examples/docker-compose.server.yml config --quiet
+          docker compose --env-file examples/agent.env -f examples/docker-compose.agent.yml config --quiet
+          docker compose -f examples/docker-compose.dual-agent.yml config --quiet
+      - name: Build Server image
+        run: docker build --build-arg VERSION="${GITHUB_SHA::12}" --build-arg COMMIT="${GITHUB_SHA}" --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f Dockerfile.server -t portloom-server:test .
+      - name: Build Agent image
+        run: docker build --build-arg VERSION="${GITHUB_SHA::12}" --build-arg COMMIT="${GITHUB_SHA}" --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f Dockerfile.agent -t portloom-agent:test .
+      - name: Build Docs image
+        run: docker build -f Dockerfile.docs -t portloom-docs:test .

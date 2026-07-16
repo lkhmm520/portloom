@@ -1,0 +1,21 @@
+{
+  "name": "portloom-docs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Official bilingual documentation for PortLoom",
+  "scripts": {
+    "docs:sync-examples": "node scripts/sync-doc-examples.mjs",
+    "docs:dev": "npm run docs:sync-examples && vitepress docs",
+    "docs:build": "npm run docs:sync-examples && vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "vite": "6.4.3"
+  }
+}

@@ -1,3 +1,7 @@
+---
+search: false
+---
+
 # Architecture
 
 ## Purpose and constraints

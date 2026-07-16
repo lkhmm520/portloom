@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sock
+.env
+.env.*
+!.env.example
+coverage.out

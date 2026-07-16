@@ -1,0 +1,40 @@
+name: portloom-agent
+
+services:
+  agent:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.agent
+      args:
+        VERSION: ${TM_VERSION:-dev}
+    image: portloom-agent:${TM_VERSION:-local}
+    container_name: portloom-agent
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ../../.env
+    environment:
+      TM_SERVER_URL: ${TM_SERVER_URL:?set TM_SERVER_URL in .env}
+      TM_CLIENT_NAME: ${TM_CLIENT_NAME:?set TM_CLIENT_NAME in .env}
+      TM_ENROLLMENT_TOKEN: ${TM_ENROLLMENT_TOKEN:-}
+      TM_AGENT_STATE_PATH: /data/agent.json
+      TM_HEARTBEAT_INTERVAL: ${TM_HEARTBEAT_INTERVAL:-30s}
+      TM_SSH_HOST: ${TM_SSH_HOST:?set TM_SSH_HOST in .env}
+      TM_SSH_PORT: ${TM_SSH_PORT:-22}
+      TM_SSH_USER: ${TM_SSH_USER:-tunnel}
+      TM_SSH_IDENTITY_FILE: /run/secrets/ssh_private_key
+      TM_SSH_KNOWN_HOSTS_FILE: /etc/ssh/ssh_known_hosts
+    volumes:
+      - ${TM_AGENT_DATA_DIR:-/opt/portloom/agent}:/data
+      # The host-side private key must be owned by 65532:65532 with mode 0600; keep both secret mounts read-only.
+      - ${TM_SSH_PRIVATE_KEY_PATH:?set TM_SSH_PRIVATE_KEY_PATH in .env}:/run/secrets/ssh_private_key:ro
+      # known_hosts may use mode 0644 after its fingerprint has been verified.
+      - ${TM_SSH_KNOWN_HOSTS_PATH:?set TM_SSH_KNOWN_HOSTS_PATH in .env}:/etc/ssh/ssh_known_hosts:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /home/tunnel/.ssh:size=1m,uid=65532,gid=65532,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

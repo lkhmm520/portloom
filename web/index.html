@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="PortLoom administration console">
+  <title>PortLoom</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <div id="login-screen" class="login-screen" aria-labelledby="login-title">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark" aria-hidden="true">TM</div>
+      <p class="eyebrow">Secure control plane</p>
+      <h1 id="login-title">PortLoom</h1>
+      <p class="muted">Enter the server administrator token. It is sent as a Bearer token and kept only for this browser session.</p>
+      <label for="admin-token">Administrator token</label>
+      <div class="secret-input">
+        <input id="admin-token" name="token" type="password" autocomplete="current-password" required autofocus>
+        <button id="toggle-token" class="button ghost compact" type="button" aria-label="Show token">Show</button>
+      </div>
+      <button class="button primary full" type="submit">Sign in</button>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+    </form>
+  </div>
+
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark" aria-hidden="true">TM</div><div><strong>PortLoom</strong><span>Administration</span></div></div>
+      <nav aria-label="Main navigation">
+        <button class="nav-item active" data-view="dashboard"><span aria-hidden="true">◫</span> Dashboard</button>
+        <button class="nav-item" data-view="clients"><span aria-hidden="true">◎</span> Clients</button>
+        <button class="nav-item" data-view="tokens"><span aria-hidden="true">◇</span> Enrollment tokens</button>
+        <button class="nav-item" data-view="routes"><span aria-hidden="true">⇄</span> Routes</button>
+      </nav>
+      <div class="sidebar-footer"><span id="api-indicator" class="connection"><i></i> API unknown</span><button id="logout-button" class="button ghost full" type="button">Sign out</button></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">Control plane</p><h1 id="page-title">Dashboard</h1></div>
+        <div class="topbar-actions"><time id="last-updated">Not updated</time><button id="refresh-button" class="button secondary" type="button">Refresh</button></div>
+      </header>
+      <div id="notice" class="notice" role="status" hidden></div>
+
+      <section id="view-dashboard" class="view active" aria-labelledby="page-title">
+        <div class="metric-grid">
+          <article class="metric"><span>Clients online</span><strong id="metric-clients">—</strong><small id="metric-clients-detail">Waiting for data</small></article>
+          <article class="metric"><span>Routes enabled</span><strong id="metric-routes">—</strong><small id="metric-routes-detail">Waiting for data</small></article>
+          <article class="metric"><span>Tunnels healthy</span><strong id="metric-tunnels">—</strong><small id="metric-tunnels-detail">Waiting for data</small></article>
+          <article class="metric"><span>Revision drift</span><strong id="metric-drift">—</strong><small id="metric-drift-detail">Waiting for data</small></article>
+        </div>
+        <div class="panel-grid">
+          <article class="panel span-2">
+            <div class="panel-heading"><div><p class="eyebrow">Live overview</p><h2>Route health</h2></div><button class="text-button" data-goto="routes">Manage routes →</button></div>
+            <div id="dashboard-routes" class="route-health-list empty-state">No route data loaded.</div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Status model</p><h2>Three layers</h2></div></div>
+            <ol class="layer-legend">
+              <li><span class="layer-number">1</span><div><strong>Local service</strong><small>Agent can reach the target on the NAS.</small></div></li>
+              <li><span class="layer-number">2</span><div><strong>SSH tunnel</strong><small>Remote forward is established.</small></div></li>
+              <li><span class="layer-number">3</span><div><strong>Public exposure</strong><small>Gateway configuration is converged.</small></div></li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-clients" class="view" aria-labelledby="page-title">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Enrolled agents</p><h2>Clients</h2></div><span id="client-count" class="count-pill">0 clients</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Client</th><th>Connection</th><th>Revisions</th><th>Version</th><th>Last seen</th></tr></thead><tbody id="clients-body"></tbody></table></div>
+          <div id="clients-empty" class="empty-state">No clients have enrolled yet.</div>
+        </article>
+      </section>
+
+      <section id="view-tokens" class="view" aria-labelledby="page-title">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">One-time credentials</p><h2>Enrollment tokens</h2></div><button id="new-token-button" class="button primary" type="button">Create token</button></div>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Created</th><th>Expires</th><th>Used by</th></tr></thead><tbody id="tokens-body"></tbody></table></div>
+          <div id="tokens-empty" class="empty-state">No enrollment tokens exist.</div>
+        </article>
+      </section>
+
+      <section id="view-routes" class="view" aria-labelledby="page-title">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Desired configuration</p><h2>Routes</h2></div><button id="new-route-button" class="button primary" type="button">Add route</button></div>
+          <div class="table-wrap route-table-wrap"><table><thead><tr><th>Route</th><th>Target</th><th>Exposure</th><th>Layered status</th><th>Revision</th><th class="align-right">Actions</th></tr></thead><tbody id="routes-body"></tbody></table></div>
+          <div id="routes-empty" class="empty-state">No routes configured. Add one to publish a local service.</div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="route-dialog">
+    <form id="route-form" class="dialog-card">
+      <div class="dialog-heading"><div><p class="eyebrow">Desired route</p><h2 id="route-dialog-title">Add route</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
+      <input id="route-id" name="id" type="hidden">
+      <div class="form-grid">
+        <label class="span-2">Name<input name="name" required maxlength="80" placeholder="Media server"></label>
+        <label>Client<select id="route-client" name="client_id" required></select></label>
+        <label>Protocol<select id="route-protocol" name="protocol" required><option value="http">HTTP</option><option value="tcp">TCP</option></select></label>
+        <label class="span-2 protocol-http">Public domain<input name="domain" maxlength="253" placeholder="media.example.com"></label>
+        <label>Local host<input name="local_host" required value="127.0.0.1" placeholder="127.0.0.1"></label>
+        <label>Local port<input name="local_port" type="number" min="1" max="65535" required placeholder="8080"></label>
+        <label class="protocol-tcp" hidden>Public TCP port<input name="public_port" type="number" min="1" max="65535" placeholder="24443"></label>
+        <label>Tunnel group<input name="tunnel_group" value="web" required maxlength="80"></label>
+        <label class="switch-row span-2"><input name="enabled" type="checkbox" checked><span class="switch" aria-hidden="true"></span><span><strong>Enabled</strong><small>Include this route in the desired agent configuration.</small></span></label>
+      </div>
+      <p id="route-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button class="button primary" type="submit">Save route</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="token-dialog">
+    <form id="token-form" class="dialog-card narrow">
+      <div class="dialog-heading"><div><p class="eyebrow">One-time credential</p><h2>Create enrollment token</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
+      <div class="form-grid"><label class="span-2">Valid for<select name="expires_in"><option value="1h">1 hour</option><option value="6h">6 hours</option><option value="24h" selected>24 hours</option><option value="168h">7 days</option></select></label></div>
+      <p id="token-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button class="button primary" type="submit">Create token</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="secret-dialog">
+    <div class="dialog-card narrow">
+      <div class="dialog-heading"><div><p class="eyebrow">Shown once</p><h2>Enrollment token</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
+      <p class="muted">Copy this token now. The server will not return it again.</p>
+      <div class="copy-field"><code id="created-token"></code><button id="copy-token-button" class="button secondary" type="button">Copy</button></div>
+      <div class="warning-box">Treat this token like a password. It is consumed when an agent enrolls.</div>
+      <div class="dialog-actions"><button class="button primary" data-close-dialog type="button">Done</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog" class="dialog-card narrow">
+      <div class="dialog-heading"><div><p class="eyebrow">Confirm action</p><h2>Delete route?</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <p id="confirm-message" class="muted"></p>
+      <div class="warning-box">The agent will remove the corresponding remote forward after it receives the new revision.</div>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button danger" value="confirm">Delete route</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

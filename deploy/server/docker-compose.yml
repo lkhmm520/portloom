@@ -1,0 +1,30 @@
+name: portloom-server
+
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.server
+      args:
+        VERSION: ${TM_VERSION:-dev}
+    image: portloom-server:${TM_VERSION:-local}
+    container_name: portloom-server
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ../../.env
+    environment:
+      TM_LISTEN_ADDR: ${TM_LISTEN_ADDR:-127.0.0.1:8080}
+      TM_GATEWAY_ADDR: ${TM_GATEWAY_ADDR:-127.0.0.1:8081}
+      TM_DATABASE_PATH: /data/portloom.db
+      TM_WEB_DIR: /app/web
+      TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN:?set TM_ADMIN_TOKEN in .env}
+    volumes:
+      - ${TM_SERVER_DATA_DIR:-/opt/portloom/server}:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

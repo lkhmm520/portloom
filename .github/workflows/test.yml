@@ -1,0 +1,53 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go and Web checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Download modules
+        run: go mod download
+      - name: Verify formatting
+        run: make fmt-check
+      - name: Vet
+        run: make vet
+      - name: Test with race detector
+        run: make test-race
+      - name: Check dependency-free Web assets
+        run: make web-check
+      - name: Build binaries
+        run: make build VERSION=${GITHUB_SHA::12}
+
+  containers:
+    name: Container and Compose checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: go
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render Compose configurations
+        run: |
+          cp .env.example .env
+          docker compose -f deploy/server/docker-compose.yml config --quiet
+          docker compose -f deploy/agent/docker-compose.yml config --quiet
+      - name: Build server image
+        run: docker build --build-arg VERSION=${GITHUB_SHA::12} -f Dockerfile.server -t portloom-server:test .
+      - name: Build agent image
+        run: docker build --build-arg VERSION=${GITHUB_SHA::12} -f Dockerfile.agent -t portloom-agent:test .

@@ -1,3 +1,7 @@
+---
+search: false
+---
+
 # PortLoom MVP Work Plan
 
 ## Goal

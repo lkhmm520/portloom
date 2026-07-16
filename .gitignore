@@ -1,6 +1,10 @@
 /bin/
 /dist/
 /data/
+/node_modules/
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
+/docs/public/examples/
 *.db
 *.db-shm
 *.db-wal
@@ -9,3 +13,4 @@
 .env.*
 !.env.example
 coverage.out
+/examples/*.env

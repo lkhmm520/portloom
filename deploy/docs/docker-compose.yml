@@ -1,0 +1,21 @@
+name: portloom-docs
+services:
+  docs:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.docs
+      args:
+        DOCS_BASE: /
+        DOCS_ORIGIN: ${DOCS_ORIGIN:-https://docs.961121.xyz/}
+    image: ${PORTLOOM_DOCS_IMAGE:-ghcr.io/lkhmm520/portloom-docs:latest}
+    container_name: portloom-docs
+    restart: unless-stopped
+    ports:
+      - ${PORTLOOM_DOCS_BIND:-127.0.0.1:4173}:8080
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+      - /var/cache/nginx:size=16m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]

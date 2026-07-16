@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 520" fill="none" role="img" aria-labelledby="title desc">
+<title id="title">PortLoom animated tunnel fabric</title><desc id="desc">Requests weave through reverse SSH tunnel routes between a VPS and NAS.</desc>
+<defs>
+ <linearGradient id="panel" x1="80" y1="30" x2="560" y2="490" gradientUnits="userSpaceOnUse"><stop stop-color="#F5FFFB"/><stop offset="1" stop-color="#E5F9F2"/></linearGradient>
+ <linearGradient id="thread" x1="120" y1="260" x2="520" y2="260" gradientUnits="userSpaceOnUse"><stop stop-color="#10B981"/><stop offset=".5" stop-color="#14B8A6"/><stop offset="1" stop-color="#0EA5E9"/></linearGradient>
+ <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+ <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" stroke="#0F9F72" stroke-opacity=".07"/></pattern>
+</defs>
+<rect x="28" y="28" width="584" height="464" rx="52" fill="url(#panel)" stroke="#B7E9D7"/>
+<rect x="28" y="28" width="584" height="464" rx="52" fill="url(#grid)"/>
+<g opacity=".65" stroke="#8ADBC2" stroke-width="2">
+ <path d="M136 110V410"/><path d="M208 82V438"/><path d="M280 68V452"/><path d="M352 68V452"/><path d="M424 82V438"/><path d="M496 110V410"/>
+</g>
+<g class="threads" stroke="url(#thread)" stroke-width="5" stroke-linecap="round">
+ <path id="r1" d="M78 142C180 142 164 204 258 204S392 142 558 142"/>
+ <path id="r2" d="M78 202C188 202 176 270 278 270S402 202 558 202"/>
+ <path id="r3" d="M78 262C184 262 170 326 272 326S398 262 558 262"/>
+ <path id="r4" d="M78 322C176 322 190 382 284 382S398 322 558 322"/>
+ <path id="r5" d="M78 382C184 382 178 438 286 438S410 382 558 382"/>
+</g>
+<g fill="#0D1714">
+ <rect x="56" y="110" width="88" height="304" rx="30" fill="#fff" stroke="#A9DFC9"/><rect x="496" y="110" width="88" height="304" rx="30" fill="#fff" stroke="#A9DFC9"/>
+ <text x="100" y="248" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" font-weight="700">VPS</text><text x="100" y="270" text-anchor="middle" font-family="monospace" font-size="10" fill="#548273">GATEWAY</text>
+ <text x="540" y="248" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" font-weight="700">NAS</text><text x="540" y="270" text-anchor="middle" font-family="monospace" font-size="10" fill="#548273">SERVICES</text>
+</g>
+<g filter="url(#glow)" fill="#ECFDF5" stroke="#10B981" stroke-width="3">
+ <circle r="8"><animateMotion dur="3.8s" repeatCount="indefinite"><mpath href="#r1"/></animateMotion></circle>
+ <circle r="7"><animateMotion dur="4.6s" begin="-.9s" repeatCount="indefinite"><mpath href="#r2"/></animateMotion></circle>
+ <circle r="9"><animateMotion dur="4.1s" begin="-2.1s" repeatCount="indefinite"><mpath href="#r3"/></animateMotion></circle>
+ <circle r="7"><animateMotion dur="5s" begin="-1.5s" repeatCount="indefinite"><mpath href="#r4"/></animateMotion></circle>
+ <circle r="8"><animateMotion dur="4.4s" begin="-3s" repeatCount="indefinite"><mpath href="#r5"/></animateMotion></circle>
+</g>
+<g class="pulse" fill="#10B981"><circle cx="320" cy="204" r="5"/><circle cx="320" cy="270" r="5"/><circle cx="320" cy="326" r="5"/><circle cx="320" cy="382" r="5"/></g>
+<style>
+.threads path{stroke-dasharray:16 10;animation:flow 5s linear infinite}.threads path:nth-child(even){animation-direction:reverse}.pulse{transform-origin:320px 292px;animation:pulse 2.4s ease-in-out infinite}@keyframes flow{to{stroke-dashoffset:-104}}@keyframes pulse{50%{opacity:.45}}@media(prefers-reduced-motion:reduce){.threads path,.pulse{animation:none}animateMotion{display:none}}
+</style></svg>

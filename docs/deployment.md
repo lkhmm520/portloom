@@ -1,3 +1,7 @@
+---
+search: false
+---
+
 # Deployment
 
 This guide deploys the server on the DMIT host and the agent on the NAS without changing existing DNS or Nginx Proxy Manager (NPM) automatically. Review every path, port, hostname, and SSH policy before applying it.

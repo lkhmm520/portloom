@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/lkhmm520/portloom/internal/api"
 	"github.com/lkhmm520/portloom/internal/authorizedkeys"
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/edge"
 	"github.com/lkhmm520/portloom/internal/gateway"
 	"github.com/lkhmm520/portloom/internal/store"
 )
@@ -41,6 +43,10 @@ type config struct {
 	PublicHost           string
 	TLSAskToken          string
 	TLSAskAddr           string
+	EdgeHTTPAddr         string
+	EdgeHTTPSAddr        string
+	TLSCacheDir          string
+	ACMEEmail            string
 	PortRangeStart       int
 	PortRangeEnd         int
 	EnrollmentTTL        time.Duration
@@ -61,7 +67,7 @@ func main() {
 func loadConfig(getenv envLookup) (config, error) {
 	cfg := config{
 		ListenAddr: "127.0.0.1:8080", GatewayAddr: "127.0.0.1:8081",
-		DatabasePath: "/data/portloom.db", WebDir: "/app/web", ManagedSSHPort: 2222, TLSAskAddr: "127.0.0.1:8082",
+		DatabasePath: "/data/portloom.db", WebDir: "/app/web", ManagedSSHPort: 2222, TLSAskAddr: "127.0.0.1:8082", TLSCacheDir: "/data/certs",
 		PortRangeStart: 20000, PortRangeEnd: 29999, EnrollmentTTL: time.Hour,
 	}
 	setString := func(key string, target *string) {
@@ -78,6 +84,10 @@ func loadConfig(getenv envLookup) (config, error) {
 	setString("TM_PUBLIC_HOST", &cfg.PublicHost)
 	setString("TM_TLS_ASK_TOKEN", &cfg.TLSAskToken)
 	setString("TM_TLS_ASK_ADDR", &cfg.TLSAskAddr)
+	setString("TM_EDGE_HTTP_ADDR", &cfg.EdgeHTTPAddr)
+	setString("TM_EDGE_HTTPS_ADDR", &cfg.EdgeHTTPSAddr)
+	setString("TM_TLS_CACHE_DIR", &cfg.TLSCacheDir)
+	setString("TM_ACME_EMAIL", &cfg.ACMEEmail)
 	cfg.AdminToken = strings.TrimSpace(getenv("TM_ADMIN_TOKEN"))
 	var err error
 	if cfg.ManagedSSHPort, err = envInt(getenv, "TM_MANAGED_SSH_PORT", cfg.ManagedSSHPort); err != nil {
@@ -114,8 +124,27 @@ func loadConfig(getenv envLookup) (config, error) {
 	if cfg.ManagedSSHIsolated && !managedPaths {
 		return config{}, errors.New("managed SSH isolation requires managed SSH paths")
 	}
-	if (cfg.PublicHost == "") != (cfg.TLSAskToken == "") {
-		return config{}, errors.New("TM_PUBLIC_HOST and TM_TLS_ASK_TOKEN must be configured together")
+	if cfg.TLSAskToken != "" && cfg.PublicHost == "" {
+		return config{}, errors.New("TM_TLS_ASK_TOKEN requires TM_PUBLIC_HOST")
+	}
+	if cfg.PublicHost != "" {
+		publicHost, valid := domain.NormalizeDNSHost(cfg.PublicHost)
+		if !valid {
+			return config{}, errors.New("TM_PUBLIC_HOST must be a valid hostname without a port")
+		}
+		cfg.PublicHost = publicHost
+	}
+	edgeConfigured := cfg.EdgeHTTPAddr != "" || cfg.EdgeHTTPSAddr != ""
+	if edgeConfigured {
+		if cfg.EdgeHTTPAddr == "" || cfg.EdgeHTTPSAddr == "" {
+			return config{}, errors.New("TM_EDGE_HTTP_ADDR and TM_EDGE_HTTPS_ADDR must be configured together")
+		}
+		if cfg.PublicHost == "" {
+			return config{}, errors.New("native edge requires TM_PUBLIC_HOST")
+		}
+		if !filepath.IsAbs(cfg.TLSCacheDir) {
+			return config{}, errors.New("TM_TLS_CACHE_DIR must be absolute")
+		}
 	}
 	if cfg.ManagedSSHPort < 1 || cfg.ManagedSSHPort > 65535 {
 		return config{}, errors.New("invalid managed SSH port")
@@ -123,7 +152,10 @@ func loadConfig(getenv envLookup) (config, error) {
 	if cfg.PortRangeStart < 1024 || cfg.PortRangeEnd > 65535 || cfg.PortRangeStart > cfg.PortRangeEnd {
 		return config{}, errors.New("invalid tunnel port range")
 	}
-	for _, address := range []string{cfg.ListenAddr, cfg.GatewayAddr, cfg.TLSAskAddr} {
+	for _, address := range []string{cfg.ListenAddr, cfg.GatewayAddr, cfg.TLSAskAddr, cfg.EdgeHTTPAddr, cfg.EdgeHTTPSAddr} {
+		if address == "" {
+			continue
+		}
 		if _, _, err := net.SplitHostPort(address); err != nil {
 			return config{}, fmt.Errorf("invalid listen address %q: %w", address, err)
 		}
@@ -189,29 +221,66 @@ func run(ctx context.Context, getenv envLookup) error {
 		ManagedSSHIsolated: cfg.ManagedSSHIsolated, ServerVersion: version,
 		PublicHost: cfg.PublicHost, TLSAskToken: cfg.TLSAskToken,
 	}
-	control := newControlServer(cfg.ListenAddr, newMainHandler(api.New(state, apiConfig), cfg.WebDir))
+	controlHandler := newMainHandler(api.New(state, apiConfig), cfg.WebDir)
+	control := newControlServer(cfg.ListenAddr, controlHandler)
 	gatewayOptions := []gateway.Option{}
 	if cfg.ManagedSSHIsolated {
 		gatewayOptions = append(gatewayOptions, gateway.WithIsolatedAgentBindings())
 	}
-	data := &http.Server{Addr: cfg.GatewayAddr, Handler: gateway.New(state, gatewayOptions...), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
-	servers := []*http.Server{control, data}
-	serverNames := []string{"control", "gateway"}
+	gatewayHandler := gateway.New(state, gatewayOptions...)
+	data := newEdgeServer(cfg.GatewayAddr, gatewayHandler, nil)
+	type serverSpec struct {
+		name   string
+		server *http.Server
+		tls    bool
+	}
+	servers := []serverSpec{{name: "control", server: control}, {name: "gateway", server: data}}
 	if cfg.TLSAskToken != "" {
-		tlsAsk := newControlServer(cfg.TLSAskAddr, api.NewTLSAskHandler(state, apiConfig))
-		servers = append(servers, tlsAsk)
-		serverNames = append(serverNames, "TLS ask")
+		servers = append(servers, serverSpec{name: "TLS ask", server: newControlServer(cfg.TLSAskAddr, api.NewTLSAskHandler(state, apiConfig))})
+	}
+	if cfg.EdgeHTTPSAddr != "" {
+		if err := os.MkdirAll(cfg.TLSCacheDir, 0o700); err != nil {
+			return fmt.Errorf("create certificate cache: %w", err)
+		}
+		certificates, err := edge.NewCertificateManager(cfg.TLSCacheDir, cfg.PublicHost, state)
+		if err != nil {
+			return fmt.Errorf("configure native edge certificates: %w", err)
+		}
+		certificates.Email = cfg.ACMEEmail
+		router, err := edge.NewRouter(cfg.PublicHost, controlHandler, gatewayHandler)
+		if err != nil {
+			return fmt.Errorf("configure native edge router: %w", err)
+		}
+		redirect, err := edge.NewHTTPRedirectHandler(cfg.PublicHost, cfg.EdgeHTTPSAddr, state)
+		if err != nil {
+			return fmt.Errorf("configure native edge redirect: %w", err)
+		}
+		tlsConfig := certificates.TLSConfig()
+		tlsConfig.MinVersion = tls.VersionTLS12
+		servers = append(servers,
+			serverSpec{name: "public HTTP edge", server: newEdgeServer(cfg.EdgeHTTPAddr, certificates.HTTPHandler(redirect), nil)},
+			serverSpec{name: "public HTTPS edge", server: newEdgeServer(cfg.EdgeHTTPSAddr, router, tlsConfig), tls: true},
+		)
 	}
 	errorsChannel := make(chan error, len(servers))
-	serve := func(name string, server *http.Server) {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errorsChannel <- fmt.Errorf("%s listener: %w", name, err)
+	serve := func(spec serverSpec) {
+		var err error
+		if spec.tls {
+			err = spec.server.ListenAndServeTLS("", "")
+		} else {
+			err = spec.server.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errorsChannel <- fmt.Errorf("%s listener: %w", spec.name, err)
 		}
 	}
-	for index, server := range servers {
-		go serve(serverNames[index], server)
+	for _, server := range servers {
+		go serve(server)
 	}
 	log.Printf("control listening on %s; gateway listening on %s", cfg.ListenAddr, cfg.GatewayAddr)
+	if cfg.EdgeHTTPSAddr != "" {
+		log.Printf("native HTTPS edge listening on %s and HTTP redirect edge on %s", cfg.EdgeHTTPSAddr, cfg.EdgeHTTPAddr)
+	}
 
 	var runErr error
 	select {
@@ -220,8 +289,8 @@ func run(ctx context.Context, getenv envLookup) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, server := range servers {
-		if err := server.Shutdown(shutdownCtx); err != nil && runErr == nil {
+	for _, spec := range servers {
+		if err := spec.server.Shutdown(shutdownCtx); err != nil && runErr == nil {
 			runErr = err
 		}
 	}
@@ -240,6 +309,17 @@ func syncAuthorizedKeys(ctx context.Context, state *store.Store, path string, is
 		}
 		return authorizedkeys.Write(path, entries, options...)
 	})
+}
+
+func newEdgeServer(addr string, handler http.Handler, tlsConfig *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func newControlServer(addr string, handler http.Handler) *http.Server {

@@ -7,7 +7,7 @@ This page is for maintainers, not an installation prerequisite. Beginner flows s
 Before the first public release is complete:
 
 - `https://docs.961121.xyz/install-server.sh` and `install-agent.sh` must not be treated as stable installation endpoints;
-- the default three-container Server installation cannot work until `ghcr.io/lkhmm520/portloom-sshd:<version>` is published;
+- the default two-container Server installation cannot work until `ghcr.io/lkhmm520/portloom-sshd:<version>` is published;
 - merged documentation and commands alone do not prove that the two-host installation is available.
 
 The first release must publish Server, Agent, sshd, and docs images with the same safe version tag, deploy the docs-hosted scripts, and then pass the post-release checks below.

@@ -1,129 +1,179 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 usage() { cat <<'EOF'
-Install PortLoom Server on the public Docker host.
+Install a self-contained PortLoom Server on a public Docker host.
 
 Usage: install-server.sh --domain portloom.example.com [options]
   --domain NAME       DNS name already pointing to this public host (required)
   --home PATH         Install directory (default: ~/.portloom/server)
-  --web-port PORT     Local Server port behind HTTPS (default: 8080)
+  --web-port PORT     Loopback management port (default: 8080)
   --ssh-port PORT     Public managed SSH tunnel port (default: 2222)
   --version TAG       PortLoom image tag (default: latest)
+  --migrate-native-edge
+                      Explicitly migrate a legacy installer-managed Caddy deployment
+
+PortLoom itself owns public TCP 80 and 443, obtains and renews ACME
+certificates, and routes enabled HTTP hostnames. No Caddy/Nginx/NPM service is
+installed. Point the management hostname and route hostnames (or one wildcard
+record) at this host before opening them in a browser.
 EOF
 }
+
 domain=""; home="${PORTLOOM_HOME:-$HOME/.portloom/server}"; web_port=8080; ssh_port=2222; version=latest
-gateway_port=${PORTLOOM_GATEWAY_PORT:-8081}; tls_ask_port=${PORTLOOM_TLS_ASK_PORT:-8082}
-caddy_http_port=${PORTLOOM_CADDY_HTTP_PORT:-80}; caddy_https_port=${PORTLOOM_CADDY_HTTPS_PORT:-443}
+migrate_native_edge=false
+edge_http_port=${PORTLOOM_HTTP_PORT:-80}; edge_https_port=${PORTLOOM_HTTPS_PORT:-443}
+gateway_port=${PORTLOOM_GATEWAY_PORT:-8081}
+edge_verify_attempts=${PORTLOOM_EDGE_VERIFY_ATTEMPTS:-30}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --domain) domain=${2:-}; shift 2;; --home) home=${2:-}; shift 2;;
     --web-port) web_port=${2:-}; shift 2;; --ssh-port) ssh_port=${2:-}; shift 2;;
-    --version) version=${2:-}; shift 2;; -h|--help) usage; exit 0;; *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
+    --version) version=${2:-}; shift 2;; --migrate-native-edge) migrate_native_edge=true; shift;;
+    -h|--help) usage; exit 0;; *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
   esac
 done
 has_control() { local LC_ALL=C; [[ "$1" =~ [[:cntrl:]] ]]; }
-[[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || { echo '--domain must be a valid DNS name' >&2; exit 2; }
-if [ -z "$home" ] || has_control "$home"; then
-  echo 'invalid --home: control characters are not allowed' >&2
-  exit 2
-fi
+valid_dns_name() {
+  local value=$1 label
+  [ -n "$value" ] && [ "${#value}" -le 253 ] && [[ "$value" != .* ]] && [[ "$value" != *. ]] || return 1
+  [[ ! "$value" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || return 1
+  IFS=. read -r -a labels <<< "$value"
+  [ "${#labels[@]}" -ge 2 ] || return 1
+  [[ "${labels[${#labels[@]}-1]}" =~ [A-Za-z] ]] || return 1
+  for label in "${labels[@]}"; do
+    [ "${#label}" -le 63 ] && [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+valid_dns_name "$domain" || { echo '--domain must be a valid DNS name' >&2; exit 2; }
+if [ -z "$home" ] || has_control "$home"; then echo 'invalid --home: control characters are not allowed' >&2; exit 2; fi
 [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo 'invalid --version' >&2; exit 2; }
-for item in "$web_port" "$ssh_port" "$gateway_port" "$tls_ask_port" "$caddy_http_port" "$caddy_https_port"; do
+for item in "$web_port" "$ssh_port" "$gateway_port" "$edge_http_port" "$edge_https_port"; do
   [[ "$item" =~ ^[0-9]+$ ]] && [ "$item" -ge 1 ] && [ "$item" -le 65535 ] || { echo 'ports must be within 1..65535' >&2; exit 2; }
 done
-ports=("$web_port" "$ssh_port" "$gateway_port" "$tls_ask_port" "$caddy_http_port" "$caddy_https_port")
-for ((i=0; i<${#ports[@]}; i++)); do
-  for ((j=i+1; j<${#ports[@]}; j++)); do
-    [ "${ports[i]}" != "${ports[j]}" ] || { echo "port conflict: ${ports[i]} is assigned more than once" >&2; exit 2; }
-  done
-done
+[[ "$edge_verify_attempts" =~ ^[0-9]+$ ]] && [ "$edge_verify_attempts" -ge 1 ] && [ "$edge_verify_attempts" -le 120 ] || { echo 'PORTLOOM_EDGE_VERIFY_ATTEMPTS must be within 1..120' >&2; exit 2; }
+ports=("$web_port" "$ssh_port" "$gateway_port" "$edge_http_port" "$edge_https_port")
+for ((i=0; i<${#ports[@]}; i++)); do for ((j=i+1; j<${#ports[@]}; j++)); do
+  [ "${ports[i]}" != "${ports[j]}" ] || { echo "port conflict: ${ports[i]} is assigned more than once" >&2; exit 2; }
+done; done
 command -v docker >/dev/null || { echo 'Docker is required' >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo 'Docker Compose v2 is required' >&2; exit 1; }
 umask 077
 server_image="${PORTLOOM_SERVER_IMAGE_OVERRIDE:-ghcr.io/lkhmm520/portloom-server:$version}"
 sshd_image="${PORTLOOM_SSHD_IMAGE_OVERRIDE:-ghcr.io/lkhmm520/portloom-sshd:$version}"
+pull_server=true
+pull_sshd=true
 portloom_root="$HOME/.portloom"
-case "$home" in
-  "$portloom_root"|"$portloom_root"/*) mkdir -p "$portloom_root"; chmod 0711 "$portloom_root";;
-esac
-mkdir -p "$home/server-data" "$home/ssh-auth" "$home/ssh-hostkeys" "$home/caddy-data" "$home/caddy-config"
+case "$home" in "$portloom_root"|"$portloom_root"/*) mkdir -p "$portloom_root"; chmod 0711 "$portloom_root";; esac
+mkdir -p "$home/server-data" "$home/ssh-auth" "$home/ssh-hostkeys"
 home=$(cd "$home" && pwd -L)
 chmod 0711 "$home"
 command -v flock >/dev/null || { echo 'flock is required to serialize Server installation' >&2; exit 1; }
-exec 9>"$home/.install.lock"
-chmod 0600 "$home/.install.lock"
-flock -n 9 || { echo "another Server installation is already running in $home" >&2; exit 1; }
-# Prevent long-running Docker children from keeping the installer lock after this shell exits.
+exec 9>"$home/.install.lock"; chmod 0600 "$home/.install.lock"; flock -n 9 || { echo "another Server installation is already running in $home" >&2; exit 1; }
 docker() { command docker "$@" 9>&-; }
-chmod 0700 "$home/caddy-data" "$home/caddy-config"
-# Host keys remain root-owned; the directory must be traversable so the unprivileged Server can read the public key.
 chmod 0755 "$home/ssh-hostkeys"
-# These two directories are owned by the unprivileged Server UID after first run.
 chmod 0700 "$home/server-data" "$home/ssh-auth" 2>/dev/null || true
-random_token() {
-  if command -v openssl >/dev/null; then openssl rand -hex 32
-  else dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
-  fi
-}
-env_value() {
-  local wanted=$1 key value
-  [ -f "$home/.env" ] || return 1
-  while IFS='=' read -r key value; do
-    if [ "$key" = "$wanted" ]; then printf '%s' "$value"; return 0; fi
-  done < "$home/.env"
-  return 1
-}
+random_token() { if command -v openssl >/dev/null; then openssl rand -hex 32; else dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'; fi; }
+env_value() { local wanted=$1 key value; [ -f "$home/.env" ] || return 1; while IFS='=' read -r key value; do [ "$key" = "$wanted" ] && { printf '%s' "$value"; return 0; }; done < "$home/.env"; return 1; }
+legacy_migration=false
+native_upgrade=false
 if [ -f "$home/.env" ]; then
-  [ "$(env_value PORTLOOM_SERVER_IMAGE || true)" = "$server_image" ] &&
-    [ "$(env_value PORTLOOM_SSHD_IMAGE || true)" = "$sshd_image" ] &&
-    [ "$(env_value PORTLOOM_DOMAIN || true)" = "$domain" ] &&
-    [ "$(env_value PORTLOOM_WEB_PORT || true)" = "$web_port" ] &&
-    [ "$(env_value PORTLOOM_SSH_PORT || true)" = "$ssh_port" ] &&
-    [ "$(env_value PORTLOOM_GATEWAY_PORT || true)" = "$gateway_port" ] &&
-    [ "$(env_value PORTLOOM_TLS_ASK_PORT || true)" = "$tls_ask_port" ] &&
-    [ "$(env_value PORTLOOM_CADDY_HTTP_PORT || true)" = "$caddy_http_port" ] &&
-    [ "$(env_value PORTLOOM_CADDY_HTTPS_PORT || true)" = "$caddy_https_port" ] || {
-      echo 'existing Server configuration does not match this install command; use the original options or a new --home' >&2
+  existing_server_image=$(env_value PORTLOOM_SERVER_IMAGE || true)
+  existing_sshd_image=$(env_value PORTLOOM_SSHD_IMAGE || true)
+  existing_http_port=$(env_value PORTLOOM_HTTP_PORT || true)
+  existing_https_port=$(env_value PORTLOOM_HTTPS_PORT || true)
+  legacy_http_port=$(env_value PORTLOOM_CADDY_HTTP_PORT || true)
+  legacy_https_port=$(env_value PORTLOOM_CADDY_HTTPS_PORT || true)
+  if [ -z "$existing_http_port" ] && [ -z "$existing_https_port" ] && [ -n "$legacy_http_port" ] && [ -n "$legacy_https_port" ]; then
+    [ "$migrate_native_edge" = true ] || {
+      echo 'legacy Caddy installation detected; rerun with --migrate-native-edge after reading the v0.3.0 backup and rollback guide' >&2
       exit 1
     }
+    [ -f "$home/compose.yml" ] && [ -f "$home/Caddyfile" ] || {
+      echo 'legacy Caddy configuration is incomplete; restore compose.yml and Caddyfile before migration' >&2
+      exit 1
+    }
+    [ "$(env_value PORTLOOM_DOMAIN || true)" = "$domain" ] && [ "$(env_value PORTLOOM_WEB_PORT || true)" = "$web_port" ] &&
+    [ "$(env_value PORTLOOM_SSH_PORT || true)" = "$ssh_port" ] && [ "$(env_value PORTLOOM_GATEWAY_PORT || true)" = "$gateway_port" ] &&
+    [ "$legacy_http_port" = "$edge_http_port" ] && [ "$legacy_https_port" = "$edge_https_port" ] || {
+      echo 'legacy Server configuration does not match this migration command; use the original domain and ports' >&2
+      exit 1
+    }
+    [ "$server_image" != "$existing_server_image" ] || {
+      echo 'legacy migration target must use a Server image reference different from the existing deployment; pass a pinned v0.3 --version' >&2
+      exit 1
+    }
+    [ "$sshd_image" != "$existing_sshd_image" ] || pull_sshd=false
+    backup_dir="$home/migration-backup-v0.3.0"
+    backup_next="$home/.migration-backup-v0.3.0.next"
+    [ ! -e "$backup_dir" ] && [ ! -e "$backup_next" ] || {
+      echo "legacy migration backup already exists under $home; inspect or remove it before retrying" >&2
+      exit 1
+    }
+    legacy_migration=true
+  else
+    [ "$migrate_native_edge" = false ] || {
+      echo '--migrate-native-edge requires an installer-managed legacy Caddy configuration' >&2
+      exit 1
+    }
+    [ "$(env_value PORTLOOM_DOMAIN || true)" = "$domain" ] && [ "$(env_value PORTLOOM_WEB_PORT || true)" = "$web_port" ] &&
+    [ "$(env_value PORTLOOM_SSH_PORT || true)" = "$ssh_port" ] && [ "$(env_value PORTLOOM_GATEWAY_PORT || true)" = "$gateway_port" ] &&
+    [ "$existing_http_port" = "$edge_http_port" ] && [ "$existing_https_port" = "$edge_https_port" ] || {
+      echo 'existing Server configuration does not match this install command; use the original domain and ports or a new --home' >&2
+      exit 1
+    }
+    [ "$existing_server_image" != "$server_image" ] || pull_server=false
+    [ "$existing_sshd_image" != "$sshd_image" ] || pull_sshd=false
+    if [ "$pull_server" = true ] || [ "$pull_sshd" = true ]; then
+      native_upgrade=true
+      backup_dir="$home/native-upgrade-backup-$version"
+      backup_next="$home/.native-upgrade-backup-$version.next"
+      [ ! -e "$backup_dir" ] && [ ! -e "$backup_next" ] || {
+        echo "native upgrade backup already exists under $home; inspect or remove it before retrying" >&2
+        exit 1
+      }
+    fi
+  fi
+elif [ "$migrate_native_edge" = true ]; then
+  echo '--migrate-native-edge requires an existing legacy Caddy installation' >&2
+  exit 1
+fi
+if [ "$legacy_migration" = true ] && [ "${PORTLOOM_NO_START:-false}" = true ]; then
+  echo 'legacy Caddy migration cannot be combined with PORTLOOM_NO_START=true' >&2
+  exit 1
 fi
 admin_token=$(env_value TM_ADMIN_TOKEN || true)
-tls_ask_token=$(env_value PORTLOOM_TLS_ASK_TOKEN || true)
 [[ "$admin_token" =~ ^[0-9A-Fa-f]{64}$ ]] || admin_token=$(random_token)
-[[ "$tls_ask_token" =~ ^[0-9A-Fa-f]{64}$ ]] || tls_ask_token=$(random_token)
+if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then
+  [ "$pull_server" = false ] || docker pull "$server_image" >/dev/null
+  [ "$pull_sshd" = false ] || docker pull "$sshd_image" >/dev/null
+fi
+docker run --rm --user 0:0 -v "$home/server-data:/server-data" -v "$home/ssh-auth:/ssh-auth" -v "$home/ssh-hostkeys:/ssh-hostkeys" --entrypoint /bin/sh "$server_image" -c 'umask 077; mkdir -p /server-data/certs; touch /ssh-auth/authorized_keys; chown -R 65532:65532 /server-data /ssh-auth; chmod 0700 /server-data /server-data/certs /ssh-auth; chmod 0600 /ssh-auth/authorized_keys; chown -R 0:0 /ssh-hostkeys; chmod 0755 /ssh-hostkeys'
+restore_legacy_files() {
+  local source=$1 file
+  for file in .env compose.yml Caddyfile; do cp -p "$source/$file" "$home/$file.restore" || return 1; done
+  for file in .env compose.yml Caddyfile; do mv "$home/$file.restore" "$home/$file" || return 1; done
+  rm -rf "$source"
+}
+restore_native_files() {
+  local source=$1 file
+  for file in .env compose.yml; do cp -p "$source/$file" "$home/$file.restore" || return 1; done
+  for file in .env compose.yml; do mv "$home/$file.restore" "$home/$file" || return 1; done
+  rm -rf "$source"
+}
+verify_public_https() {
+  local attempt
+  for ((attempt=1; attempt<=edge_verify_attempts; attempt++)); do
+    docker exec portloom-server curl --fail --silent --show-error --max-time 5 --resolve "$domain:$edge_https_port:127.0.0.1" "https://$domain:$edge_https_port/healthz" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
 printf '%s\n' \
-  "PORTLOOM_SERVER_IMAGE=$server_image" "PORTLOOM_SSHD_IMAGE=$sshd_image" \
-  "PORTLOOM_DOMAIN=$domain" "PORTLOOM_WEB_PORT=$web_port" "PORTLOOM_SSH_PORT=$ssh_port" \
-  "PORTLOOM_GATEWAY_PORT=$gateway_port" "PORTLOOM_TLS_ASK_PORT=$tls_ask_port" \
-  "PORTLOOM_CADDY_HTTP_PORT=$caddy_http_port" "PORTLOOM_CADDY_HTTPS_PORT=$caddy_https_port" \
-  "TM_ADMIN_TOKEN=$admin_token" "PORTLOOM_TLS_ASK_TOKEN=$tls_ask_token" > "$home/.env.next"
+  "PORTLOOM_SERVER_IMAGE=$server_image" "PORTLOOM_SSHD_IMAGE=$sshd_image" "PORTLOOM_DOMAIN=$domain" \
+  "PORTLOOM_WEB_PORT=$web_port" "PORTLOOM_SSH_PORT=$ssh_port" "PORTLOOM_GATEWAY_PORT=$gateway_port" \
+  "PORTLOOM_HTTP_PORT=$edge_http_port" "PORTLOOM_HTTPS_PORT=$edge_https_port" "TM_ADMIN_TOKEN=$admin_token" > "$home/.env.next"
 chmod 600 "$home/.env.next"
-mv "$home/.env.next" "$home/.env"
-local_certs_line=""
-[ "${PORTLOOM_CADDY_LOCAL_TLS:-false}" = true ] && local_certs_line="local_certs"
-cat > "$home/Caddyfile.next" <<EOF
-{
-  http_port $caddy_http_port
-  https_port $caddy_https_port
-  $local_certs_line
-  on_demand_tls {
-    ask http://127.0.0.1:$tls_ask_port/api/v1/tls/allow?token={\$PORTLOOM_TLS_ASK_TOKEN}
-  }
-}
-$domain {
-  encode zstd gzip
-  reverse_proxy 127.0.0.1:$web_port
-}
-https:// {
-  tls {
-    on_demand
-  }
-  encode zstd gzip
-  reverse_proxy 127.0.0.1:$gateway_port
-}
-EOF
-chmod 600 "$home/Caddyfile.next"
-mv "$home/Caddyfile.next" "$home/Caddyfile"
 cat > "$home/compose.yml.next" <<'EOF'
 name: portloom
 services:
@@ -155,6 +205,11 @@ services:
     environment:
       TM_LISTEN_ADDR: 127.0.0.1:${PORTLOOM_WEB_PORT}
       TM_GATEWAY_ADDR: 127.0.0.1:${PORTLOOM_GATEWAY_PORT}
+      TM_HEALTHCHECK_URL: http://127.0.0.1:${PORTLOOM_WEB_PORT}/healthz
+      TM_EDGE_HTTP_ADDR: :${PORTLOOM_HTTP_PORT}
+      TM_EDGE_HTTPS_ADDR: :${PORTLOOM_HTTPS_PORT}
+      TM_TLS_CACHE_DIR: /data/certs
+      TM_PUBLIC_HOST: ${PORTLOOM_DOMAIN}
       TM_DATABASE_PATH: /data/portloom.db
       TM_WEB_DIR: /app/web
       TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN}
@@ -162,9 +217,6 @@ services:
       TM_SSH_HOST_PUBLIC_KEY_PATH: /ssh-hostkeys/ssh_host_ed25519_key.pub
       TM_MANAGED_SSH_PORT: ${PORTLOOM_SSH_PORT}
       TM_MANAGED_SSH_ISOLATED: "true"
-      TM_PUBLIC_HOST: ${PORTLOOM_DOMAIN}
-      TM_TLS_ASK_TOKEN: ${PORTLOOM_TLS_ASK_TOKEN}
-      TM_TLS_ASK_ADDR: 127.0.0.1:${PORTLOOM_TLS_ASK_PORT}
     volumes:
       - ./server-data:/data
       - ./ssh-auth:/ssh-auth
@@ -174,32 +226,87 @@ services:
       - /tmp:size=16m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-  caddy:
-    image: caddy:2-alpine
-    container_name: portloom-caddy
-    restart: unless-stopped
-    network_mode: host
-    depends_on: [server]
-    environment:
-      PORTLOOM_TLS_ASK_TOKEN: ${PORTLOOM_TLS_ASK_TOKEN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy-data:/data
-      - ./caddy-config:/config
+    cap_add: [NET_BIND_SERVICE]
 EOF
 chmod 600 "$home/compose.yml.next"
-mv "$home/compose.yml.next" "$home/compose.yml"
-if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then
-  docker pull "$server_image" >/dev/null
-  docker pull "$sshd_image" >/dev/null
+if [ "$legacy_migration" = true ] || [ "$native_upgrade" = true ]; then
+  if ! mkdir -m 0700 "$backup_next"; then
+    rm -f "$home/.env.next" "$home/compose.yml.next"
+    exit 1
+  fi
+  backup_failed=false
+  if [ "$legacy_migration" = true ]; then
+    cp -p "$home/.env" "$home/compose.yml" "$home/Caddyfile" "$backup_next/" || backup_failed=true
+  else
+    cp -p "$home/.env" "$home/compose.yml" "$backup_next/" || backup_failed=true
+  fi
+  if [ "$backup_failed" = true ] || ! mv "$backup_next" "$backup_dir"; then
+    rm -rf "$backup_next"
+    rm -f "$home/.env.next" "$home/compose.yml.next"
+    exit 1
+  fi
 fi
-docker run --rm --user 0:0 -v "$home/server-data:/server-data" -v "$home/ssh-auth:/ssh-auth" -v "$home/ssh-hostkeys:/ssh-hostkeys" \
-  --entrypoint /bin/sh "$server_image" -c \
-  'umask 077; touch /ssh-auth/authorized_keys; chown -R 65532:65532 /server-data /ssh-auth; chmod 0700 /server-data /ssh-auth; chmod 0600 /ssh-auth/authorized_keys; chown -R 0:0 /ssh-hostkeys; chmod 0755 /ssh-hostkeys'
+switch_failed=false
+mv "$home/.env.next" "$home/.env" || switch_failed=true
+if [ "$switch_failed" = false ]; then mv "$home/compose.yml.next" "$home/compose.yml" || switch_failed=true; fi
+if [ "$switch_failed" = true ]; then
+  rm -f "$home/.env.next" "$home/compose.yml.next"
+  if [ "$legacy_migration" = true ]; then
+    restore_legacy_files "$backup_dir" || echo 'failed to restore legacy files after configuration switch error; use the migration backup directory manually' >&2
+  elif [ "$native_upgrade" = true ]; then
+    restore_native_files "$backup_dir" || echo 'failed to restore native-edge files after configuration switch error; use the upgrade backup directory manually' >&2
+  fi
+  exit 1
+fi
 if [ "${PORTLOOM_NO_START:-false}" = true ]; then
   printf '\nPortLoom Server files were generated and initialized at %s.\n' "$home"
   exit 0
 fi
-(cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_TLS_ASK_PORT -u PORTLOOM_CADDY_HTTP_PORT -u PORTLOOM_CADDY_HTTPS_PORT -u TM_ADMIN_TOKEN -u PORTLOOM_TLS_ASK_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose --env-file .env -f compose.yml up -d) 9>&-
+activation_failed=false
+activation_error='native-edge startup failed'
+if [ "$legacy_migration" = true ]; then
+  (cd "$home" && docker compose --project-directory "$home" --env-file migration-backup-v0.3.0/.env -f migration-backup-v0.3.0/compose.yml stop caddy) 9>&- || activation_failed=true
+fi
+if [ "$activation_failed" = false ]; then
+  (cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose --env-file .env -f compose.yml up -d --remove-orphans) 9>&- || activation_failed=true
+fi
+if [ "$activation_failed" = false ] && ! verify_public_https; then
+  activation_failed=true
+  activation_error='native HTTPS edge did not become ready'
+fi
+if [ "$activation_failed" = true ]; then
+  if [ "$legacy_migration" = true ]; then
+    echo "$activation_error; restoring the legacy Caddy deployment" >&2
+    rollback_failed=false
+    (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml down --remove-orphans) 9>&- || rollback_failed=true
+    if ! restore_legacy_files "$backup_dir"; then
+      rollback_failed=true
+    elif ! (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml up -d) 9>&-; then
+      rollback_failed=true
+    elif ! verify_public_https; then
+      rollback_failed=true
+    fi
+    if [ "$rollback_failed" = true ]; then
+      echo 'automatic legacy restoration could not be verified; canonical legacy files were restored when possible, but service status requires manual inspection' >&2
+    fi
+  elif [ "$native_upgrade" = true ]; then
+    echo "$activation_error; restoring the previous native-edge deployment" >&2
+    rollback_failed=false
+    (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml down --remove-orphans) 9>&- || rollback_failed=true
+    if ! restore_native_files "$backup_dir"; then
+      rollback_failed=true
+    elif ! (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml up -d) 9>&-; then
+      rollback_failed=true
+    elif ! verify_public_https; then
+      rollback_failed=true
+    fi
+    if [ "$rollback_failed" = true ]; then
+      echo 'automatic native-edge restoration could not be verified; canonical previous files were restored when possible, but service status requires manual inspection' >&2
+    fi
+  else
+    echo "$activation_error" >&2
+  fi
+  exit 1
+fi
 printf '\nPortLoom Server is installed.\nWebUI: https://%s\nAdministrator token: %s\nFiles: %s\n\n' "$domain" "$admin_token" "$home"
-printf 'Open TCP %s, %s and %s on the public-host firewall. Keep .env private.\n' "$caddy_http_port" "$caddy_https_port" "$ssh_port"
+printf 'Open TCP %s, %s and %s on the public-host firewall. Keep .env private.\n' "$edge_http_port" "$edge_https_port" "$ssh_port"

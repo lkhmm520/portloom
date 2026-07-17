@@ -121,3 +121,51 @@ func TestSyncAuthorizedKeysRebuildsFileFromStore(t *testing.T) {
 		t.Fatalf("body=%q", data)
 	}
 }
+
+func TestLoadConfigEnablesNativeEdgeOnlyWithCompletePublicTLSConfiguration(t *testing.T) {
+	base := map[string]string{
+		"TM_ADMIN_TOKEN":     "a-very-long-admin-token",
+		"TM_PUBLIC_HOST":     "console.example.com",
+		"TM_EDGE_HTTP_ADDR":  ":80",
+		"TM_EDGE_HTTPS_ADDR": ":443",
+		"TM_TLS_CACHE_DIR":   "/data/certs",
+	}
+	cfg, err := loadConfig(func(key string) string { return base[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EdgeHTTPAddr != ":80" || cfg.EdgeHTTPSAddr != ":443" || cfg.TLSCacheDir != "/data/certs" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	delete(base, "TM_EDGE_HTTPS_ADDR")
+	if _, err := loadConfig(func(key string) string { return base[key] }); err == nil {
+		t.Fatal("partial edge configuration accepted")
+	}
+}
+
+func TestLoadConfigRejectsMalformedNativeEdgePublicHost(t *testing.T) {
+	for _, publicHost := range []string{
+		"bad host.example.com",
+		"console.example.com:443",
+		"console..example.com",
+		"127.0.0.1",
+		"127.1",
+		"2130706433",
+		"localhost",
+		"2001:db8::1",
+		strings.Repeat("a", 64) + ".example.com",
+	} {
+		t.Run(publicHost, func(t *testing.T) {
+			env := map[string]string{
+				"TM_ADMIN_TOKEN":     "a-very-long-admin-token",
+				"TM_PUBLIC_HOST":     publicHost,
+				"TM_EDGE_HTTP_ADDR":  ":80",
+				"TM_EDGE_HTTPS_ADDR": ":443",
+				"TM_TLS_CACHE_DIR":   "/data/certs",
+			}
+			if _, err := loadConfig(func(key string) string { return env[key] }); err == nil {
+				t.Fatal("malformed native-edge public host accepted")
+			}
+		})
+	}
+}

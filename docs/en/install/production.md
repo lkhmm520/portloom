@@ -1,27 +1,29 @@
 # Production deployment
 
-Choose the public ingress before deploying:
+The quick start fits a VPS with free ports 80/443. Choose the public ingress before deploying:
 
-- Use the easy installer's Caddy when ports 80/443 are free.
-- Deploy Server plus managed sshd behind an existing Caddy, Nginx, or NPM instance.
-- Pin every image tag and audit the Compose files for regulated environments.
+- When 80/443 are free, use the easy installer and let PortLoom Server terminate HTTPS natively.
+- With existing Caddy, Nginx, or NPM, use 8080/8081 as reverse-proxy upstreams; this is an advanced integration compatible with older deployments.
+- For regulated environments, pin image tags and audit Compose, capabilities, and volume permissions.
 
-## Ports and traffic
+## Native-edge ports and traffic
 
 | Port | Default bind | Purpose |
 | --- | --- | --- |
-| 80/443 | public Caddy address | WebUI and HTTP route hostnames |
+| 80/443 | public PortLoom Server address | ACME HTTP-01, HTTPS WebUI, and HTTP route hostnames |
 | 2222 | public managed sshd | outbound Agent reverse tunnels |
-| 8080 | 127.0.0.1 | Server WebUI and API |
-| 8081 | 127.0.0.1 | Host-routing Gateway |
+| 8080 | 127.0.0.1 | internal Server WebUI and API listener |
+| 8081 | 127.0.0.1 | internal Host-routing Gateway listener |
 | 20000–29999 | 127.0.0.1 | allocated SSH loopback listeners |
 
-The Agent network needs outbound access to Server ports 443 and 2222 only.
+The Agent network needs outbound access to Server ports 443 and 2222 only. Public port 80 must remain reachable for ACME HTTP-01 issuance and renewal.
+
+Server requires the `NET_BIND_SERVICE` capability to bind 80/443 as a non-root user. The easy installer drops every capability and adds back only this one; do the same in hand-written Compose instead of using a privileged container.
 
 ## Pin images
 
 ```bash
-./install-server.sh --domain portloom.example.com --version 0.2.0
+./install-server.sh --domain portloom.example.com --version 0.3.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
 docker compose up -d
@@ -34,18 +36,27 @@ Keep the Compose project name and volume paths during upgrades. Do not recreate 
 
 `portloom-sshd` is isolated from the host SSH service. It accepts Ed25519 public keys and remote forwarding to `127.0.0.1:*` only. It denies shell commands, TTY, X11, Agent forwarding, and user RC files.
 
-Server writes the `ssh-auth` volume while sshd mounts it read-only. sshd writes persistent host keys while Server mounts them read-only. Server rebuilds `authorized_keys` from SQLite at startup.
+Server writes the `ssh-auth` volume while sshd mounts it read-only. sshd writes persistent host keys while Server mounts them read-only. Server rebuilds `authorized_keys` from SQLite at startup. Preserve `ssh-hostkeys/ssh_host_ed25519_key`.
 
-Preserve `ssh-hostkeys/ssh_host_ed25519_key`. Replacing it correctly causes Agents to fail closed. Restore the original volume instead of disabling strict host-key checking.
+## State, certificates, and permissions
 
-## State and permissions
+Back up:
 
-Back up `server-data/portloom.db`, `ssh-hostkeys/`, `.env`, `Caddyfile`, and `caddy-data/`. Server data and SSH authorization are written by UID/GID 65532. Do not solve permission errors with mode `0777`.
+```text
+server-data/portloom.db
+server-data/certs/
+ssh-hostkeys/
+.env
+```
 
-## Existing ingress
+`/data/certs` is autocert's persistent certificate cache and maps to `server-data/certs/` in the default install. Server data and SSH authorization are written by UID/GID 65532. Do not solve permission errors with mode `0777`.
 
-Remove Caddy from the easy Compose file. Keep Server on loopback or a firewall-protected private interface. Proxy the management hostname to 8080 and application hostnames to 8081 with the original Host header. See [Reverse proxy integration](/en/install/reverse-proxy). Managed sshd can remain on 2222 without changing host SSH on 22.
+## Existing ingress (advanced/compatibility mode)
+
+Leave native `TM_EDGE_HTTP_ADDR`/`TM_EDGE_HTTPS_ADDR` disabled, and keep Server's 8080/8081 listeners on loopback or a firewall-protected private interface. Proxy the management hostname to 8080 and application hostnames to 8081 with the original Host header. See [Reverse proxy integration](/en/install/reverse-proxy). Managed sshd can remain on 2222.
+
+An external Caddy deployment that still uses on-demand TLS `ask` may enable the optional `TM_TLS_ASK_TOKEN` and `TM_TLS_ASK_ADDR` compatibility endpoint. It is not the certificate path used by the native edge.
 
 ## Acceptance checks
 
-Verify HTTPS WebUI login, rejected command login on 2222, Agent presence, local and tunnel health, public Host routing, automatic recovery after restarting Agent/Server/sshd, and a restore drill from backup.
+Verify HTTPS WebUI access, HTTP-to-HTTPS redirects, rejected command login on 2222, Agent/Local/Tunnel state, Host preservation, and restart recovery. Confirm only `TM_PUBLIC_HOST` and enabled HTTP route hostnames can trigger issuance, and test restoration of the database, certificate cache, and SSH host identity.

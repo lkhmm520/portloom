@@ -16,7 +16,7 @@ portloom.example.com  A  203.0.113.10
 *.example.com  A  203.0.113.10
 ```
 
-VPS 防火墙放行 TCP `80`、`443` 和 `2222`。NAS 不需要开放入站端口。
+VPS 防火墙放行 TCP `80`、`443` 和 `2222`。NAS 不需要开放入站端口。ACME HTTP-01 验证要求公网能够访问端口 80，且 80/443 不能被其他程序占用。
 
 ## 1. 在公网主机安装 Server
 
@@ -29,11 +29,12 @@ chmod 0700 install-server.sh
 ./install-server.sh --domain portloom.example.com
 ```
 
-安装器会启动三个容器：
+安装器会启动两个容器：
 
-- `portloom-server`：WebUI、API 和路由网关；
-- `portloom-sshd`：PortLoom 专用的受限 SSH 入口；
-- `portloom-caddy`：自动申请管理域名和业务域名的 HTTPS 证书。
+- `portloom-server`：WebUI、API、路由网关和公网 80/443 原生 HTTPS 入口；
+- `portloom-sshd`：PortLoom 专用的受限 SSH 入口。
+
+Server 使用 autocert 和 ACME HTTP-01 自动申请及续期证书，并把证书缓存持久化到 Server 数据目录内的 `/data/certs`。安装器会为 Server 添加绑定 80/443 所需的 `NET_BIND_SERVICE` capability；不会安装 Caddy、Nginx 或 NPM。
 
 结束时会显示 WebUI 地址和随机管理员令牌。
 
@@ -41,24 +42,11 @@ chmod 0700 install-server.sh
 
 访问 `https://portloom.example.com`，输入安装器显示的管理员令牌。
 
-进入 **Add Agent**，填写：
-
-- Agent name：例如 `home-nas`；
-- Server URL：`https://portloom.example.com`；
-- Public Server host：`portloom.example.com`；
-- SSH tunnel port：默认 `2222`。
-
-点击 **Generate command**，网页会生成一条只显示一次的安装命令。
+进入 **Add Agent**，填写 Agent 名称、HTTPS Server URL、公网 Server 主机名和 SSH 端口 `2222`，然后点击 **Generate command**。
 
 ## 3. 在 NAS 安装 Agent
 
-把上一步的完整命令粘贴到 NAS 或内网 Docker 主机执行。安装器会自动：
-
-- 生成独立 Ed25519 密钥；
-- 写入Server主机公钥，不使用不可信的`ssh-keyscan`结果；
-- 使用一次性令牌注册；
-- 上传Agent公钥并更新受限授权文件；
-- 启动Agent，注册成功后从配置中删除一次性令牌。
+把生成的完整命令粘贴到 NAS 或内网 Docker 主机执行。安装器会生成 Ed25519 密钥、固定 Server 主机公钥、使用一次性令牌注册、上传 Agent 公钥，并在成功后删除一次性注册令牌。
 
 几秒后，WebUI 的 Clients 页面会显示新主机。
 
@@ -72,13 +60,13 @@ chmod 0700 install-server.sh
 | Client | home-nas |
 | Protocol | HTTP |
 | Public domain | jellyfin.example.com |
-| Local host | 127.0.0.1，或NAS局域网服务地址 |
+| Local host | 127.0.0.1，或 NAS 局域网服务地址 |
 | Local port | 8096 |
 
 保存后等待本地服务和隧道状态变为绿色，再访问 `https://jellyfin.example.com`。
 
-::: tip DNS
-如果没有配置通配符解析，请单独把 `jellyfin.example.com` 的 A/AAAA 记录指向VPS。Caddy只会为WebUI中已启用的HTTP路由申请证书。
+::: tip DNS 与证书
+如果没有配置通配符解析，请单独把 `jellyfin.example.com` 的 A/AAAA 记录指向 VPS。内置入口只会为 `TM_PUBLIC_HOST` 和 WebUI 中已启用的 HTTP 路由域名申请证书；未知域名不会被授权。
 :::
 
-配置文件和升级方式见[Docker安装](/install/docker)。已有反向代理或需要手动审计全部Compose参数时，阅读[生产环境部署](/install/production)。
+配置文件和升级方式见[Docker 安装](/install/docker)。已有反向代理或需要手动审计全部 Compose 参数时，阅读[生产环境部署](/install/production)。

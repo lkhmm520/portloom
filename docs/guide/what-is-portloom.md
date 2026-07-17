@@ -1,26 +1,44 @@
-# 认识 PortLoom
+# PortLoom 是什么
 
-PortLoom 是面向 NAS、家庭实验室与小型自托管环境的反向 SSH 隧道控制平面。它不替代 Nginx Proxy Manager（NPM）、DNS 或 OpenSSH，而是把原本散落在脚本、Compose 和人工记录中的隧道配置变成可观察的期望状态。
+PortLoom 是一个自托管的隧道代理。它把家中 NAS 或公司内网里的 Web 服务，通过一台有公网地址的 Docker 主机发布到互联网。
 
-## 解决什么问题
+## 需要哪两台主机
 
-传统 `ssh -R` 很可靠，但多服务环境常见以下问题：端口与域名映射难追踪、进程存活不代表服务可用、迁移缺少回滚证据、root 密钥权限过大。PortLoom 提供：
+| 位置 | 安装内容 | 负责什么 |
+| --- | --- | --- |
+| 公网 VPS 或云主机 | PortLoom Server | WebUI、管理接口、HTTPS 入口和隧道入口 |
+| NAS 或内网服务器 | PortLoom Agent | 主动连接 Server，把流量转发给本地服务 |
 
-- Web 控制台与 Bearer Token 管理 API；
-- 一次性、可过期的 Agent 注册令牌；
-- 客户端心跳、期望/观测版本与路由状态；
-- HTTP `Host` 网关，让多个域名共享一个 NPM 上游；
-- 本地服务、SSH 隧道、公网收敛三层状态；
-- SQLite 持久化，无外部数据库。
+Agent 只需要向外访问 Server 的 HTTPS 和 SSH 端口。路由器不需要给 NAS 做端口转发。
 
-## 不做什么
+## 一次访问怎么走
 
-- 不申请证书、不修改 DNS、不调用 NPM API；
-- 不启动或修改宿主机 SSH 服务；
-- 不把远程转发暴露到公网地址；
-- 当前版本不提供高可用 Server 集群；
-- TCP 路由目前主要保存元数据，公网 TCP 监听仍需单独设计。
+```text
+浏览器
+  │ HTTPS
+  ▼
+公网 Docker 主机
+  Caddy → PortLoom Gateway
+              │
+              │ 已建立的加密反向隧道
+              ▼
+内网 Docker 主机
+  PortLoom Agent → Jellyfin / 博客 / 管理页面
+```
 
-## 适用场景
+隧道由 Agent 主动连接 Server。访问流量则沿已建立的隧道返回内网服务。
 
-适合已有 VPS、NPM 和域名，希望安全发布 Jellyfin、博客、下载器、NAS 管理页面等服务的用户。若只需要一个临时端口，单条 `ssh -R` 可能更简单；当域名、客户端和隧道数量开始增长时，PortLoom 才真正体现价值。
+## 日常怎么用
+
+安装完成后，日常操作只在 WebUI 里进行：
+
+1. 添加一台 Agent，复制网页生成的安装命令；
+2. 在 NAS 上粘贴执行；
+3. 新建路由，填写本地地址、端口和公网域名；
+4. 查看本地服务和隧道是否在线。
+
+## 当前边界
+
+当前版本完整管理 HTTP/HTTPS 域名路由。TCP 字段仅为兼容元数据；内置公网入口和 WebUI 不创建公网 TCP 监听，也不会把这类记录显示为已发布或健康。Server 使用单个 SQLite 数据库，不提供多Server主动集群。
+
+已有 Caddy、Nginx 或 Nginx Proxy Manager 的用户可以继续使用原入口，参见[反向代理接入](/install/reverse-proxy)。它们是可选集成，不是安装PortLoom的前提。

@@ -4,7 +4,7 @@ const docsBase = process.env.DOCS_BASE || '/'
 
 const zhSidebar: DefaultTheme.SidebarItem[] = [
   { text: '开始使用', items: [
-    { text: '认识 PortLoom', link: '/guide/what-is-portloom' }, { text: '五分钟快速开始', link: '/guide/quick-start' }, { text: '核心概念', link: '/guide/concepts' }
+    { text: '五分钟快速开始', link: '/guide/quick-start' }, { text: '认识 PortLoom', link: '/guide/what-is-portloom' }, { text: '核心概念', link: '/guide/concepts' }
   ]},
   { text: '安装部署', items: [
     { text: 'Docker 安装', link: '/install/docker' }, { text: '生产环境部署', link: '/install/production' }, { text: '反向代理接入', link: '/install/reverse-proxy' }
@@ -13,7 +13,7 @@ const zhSidebar: DefaultTheme.SidebarItem[] = [
     { text: '客户端与注册', link: '/usage/clients' }, { text: '路由管理', link: '/usage/routes' }, { text: '健康状态', link: '/usage/health' }
   ]},
   { text: '运维', items: [
-    { text: '安全加固', link: '/operations/security' }, { text: '备份、升级与回滚', link: '/operations/backup-upgrade' }, { text: '故障排查', link: '/operations/troubleshooting' }
+    { text: '安全加固', link: '/operations/security' }, { text: '备份、升级与回滚', link: '/operations/backup-upgrade' }, { text: '故障排查', link: '/operations/troubleshooting' }, { text: '发布验收', link: '/operations/release-checklist' }
   ]},
   { text: '参考', items: [
     { text: '配置参考', link: '/reference/configuration' }, { text: 'HTTP API', link: '/reference/api' }, { text: '模板下载', link: '/reference/templates' }, { text: '系统架构', link: '/reference/architecture' }
@@ -22,7 +22,7 @@ const zhSidebar: DefaultTheme.SidebarItem[] = [
 
 const enSidebar: DefaultTheme.SidebarItem[] = [
   { text: 'Getting started', items: [
-    { text: 'What is PortLoom?', link: '/en/guide/what-is-portloom' }, { text: 'Five-minute quick start', link: '/en/guide/quick-start' }, { text: 'Core concepts', link: '/en/guide/concepts' }
+    { text: 'Five-minute quick start', link: '/en/guide/quick-start' }, { text: 'What is PortLoom?', link: '/en/guide/what-is-portloom' }, { text: 'Core concepts', link: '/en/guide/concepts' }
   ]},
   { text: 'Installation', items: [
     { text: 'Install with Docker', link: '/en/install/docker' }, { text: 'Production deployment', link: '/en/install/production' }, { text: 'Reverse proxy integration', link: '/en/install/reverse-proxy' }
@@ -31,7 +31,7 @@ const enSidebar: DefaultTheme.SidebarItem[] = [
     { text: 'Clients and enrollment', link: '/en/usage/clients' }, { text: 'Route management', link: '/en/usage/routes' }, { text: 'Health model', link: '/en/usage/health' }
   ]},
   { text: 'Operations', items: [
-    { text: 'Security hardening', link: '/en/operations/security' }, { text: 'Backup, upgrade, rollback', link: '/en/operations/backup-upgrade' }, { text: 'Troubleshooting', link: '/en/operations/troubleshooting' }
+    { text: 'Security hardening', link: '/en/operations/security' }, { text: 'Backup, upgrade, rollback', link: '/en/operations/backup-upgrade' }, { text: 'Troubleshooting', link: '/en/operations/troubleshooting' }, { text: 'Release acceptance', link: '/en/operations/release-checklist' }
   ]},
   { text: 'Reference', items: [
     { text: 'Configuration', link: '/en/reference/configuration' }, { text: 'HTTP API', link: '/en/reference/api' }, { text: 'Templates', link: '/en/reference/templates' }, { text: 'Architecture', link: '/en/reference/architecture' }
@@ -46,7 +46,7 @@ const shared = {
 const zhTheme: DefaultTheme.Config = {
   ...shared,
   nav: [
-    { text: '指南', link: '/guide/what-is-portloom' }, { text: '运维', link: '/operations/security' },
+    { text: '开始安装', link: '/guide/quick-start' }, { text: '运维', link: '/operations/security' },
     { text: '参考', link: '/reference/configuration' }, { text: '控制台', link: 'https://portloom.961121.xyz' }
   ],
   sidebar: zhSidebar,
@@ -63,7 +63,7 @@ const zhTheme: DefaultTheme.Config = {
 const enTheme: DefaultTheme.Config = {
   ...shared,
   nav: [
-    { text: 'Guides', link: '/en/guide/what-is-portloom' }, { text: 'Operations', link: '/en/operations/security' },
+    { text: 'Install', link: '/en/guide/quick-start' }, { text: 'Operations', link: '/en/operations/security' },
     { text: 'Reference', link: '/en/reference/configuration' }, { text: 'Console', link: 'https://portloom.961121.xyz' }
   ],
   sidebar: enSidebar,
@@ -75,7 +75,7 @@ const enTheme: DefaultTheme.Config = {
 }
 
 export default defineConfig({
-  title: 'PortLoom', description: '安全、可观察的自托管反向 SSH 隧道控制平面', lang: 'zh-CN',
+  title: 'PortLoom', description: '稳定、可靠、快速的自托管隧道代理', lang: 'zh-CN',
   base: docsBase, cleanUrls: true,
   srcExclude: ['WORKPLAN.md', 'architecture.md', 'deployment.md'],
   lastUpdated: process.env.DOCS_LAST_UPDATED != 'false',
@@ -84,11 +84,11 @@ export default defineConfig({
     ['link', { rel: 'icon', href: `${docsBase}favicon.svg`, type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#10b981' }], ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:title', content: 'PortLoom Documentation' }],
-    ['meta', { property: 'og:description', content: '安全、可观察的自托管反向 SSH 隧道控制平面' }]
+    ['meta', { property: 'og:description', content: '稳定、可靠、快速的自托管隧道代理' }]
   ],
   themeConfig: { search: { provider: 'local' } },
   locales: {
     root: { label: '简体中文', lang: 'zh-CN', link: '/', themeConfig: zhTheme },
-    en: { label: 'English', lang: 'en-US', link: '/en/', title: 'PortLoom', description: 'A safe and observable self-hosted reverse SSH tunnel control plane', themeConfig: enTheme }
+    en: { label: 'English', lang: 'en-US', link: '/en/', title: 'PortLoom', description: 'A stable, reliable, fast self-hosted tunnel proxy', themeConfig: enTheme }
   }
 })

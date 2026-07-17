@@ -1,24 +1,44 @@
 # What is PortLoom?
 
-PortLoom is a reverse SSH tunnel control plane for NAS, homelab, and small self-hosted environments. It does not replace Nginx Proxy Manager (NPM), DNS, or OpenSSH. It turns tunnel configuration previously scattered across scripts and Compose files into observable desired state.
+PortLoom is a self-hosted tunnel proxy. It publishes web services from a home NAS or private network through a Docker host with a public address.
 
-## What it solves
+## The two hosts
 
-A plain `ssh -R` is reliable, but larger installations struggle with mapping ownership, false-positive process checks, unsafe root keys, and undocumented rollback. PortLoom adds:
+| Location | Install | Responsibility |
+| --- | --- | --- |
+| Public VPS or cloud host | PortLoom Server | WebUI, management API, HTTPS ingress, and tunnel entry |
+| NAS or internal server | PortLoom Agent | Connects outbound to Server and forwards traffic to local services |
 
-- a Web console and Bearer-protected administration API;
-- one-time, expiring agent enrollment tokens;
-- client heartbeat and desired/observed revisions;
-- an HTTP `Host` gateway shared by many domains;
-- separate local, tunnel, and convergence health layers;
-- SQLite persistence with no external database.
+The Agent only needs outbound HTTPS and SSH access to Server. You do not open an inbound port on the NAS router.
 
-## What it does not do
+## Request path
 
-- issue certificates, modify DNS, or call the NPM API;
-- start or configure the host SSH daemon;
-- bind reverse forwards to public interfaces;
-- provide an active/active Server cluster;
-- automatically expose raw TCP routes in the current release.
+```text
+Browser
+  │ HTTPS
+  ▼
+Public Docker host
+  Caddy → PortLoom Gateway
+              │
+              │ established encrypted reverse tunnel
+              ▼
+Internal Docker host
+  PortLoom Agent → Jellyfin / blog / admin page
+```
 
-PortLoom is most useful once you have multiple domains, clients, or tunnels to operate. For one temporary port, a direct `ssh -R` may still be simpler.
+The Agent initiates the tunnel to Server. Requests travel back through that established tunnel to the internal service.
+
+## Daily use
+
+After installation, routine work happens in the WebUI:
+
+1. Add an Agent and copy its generated install command.
+2. Paste the command on the NAS.
+3. Add a route with its local address, port, and public hostname.
+4. Check local reachability and tunnel health.
+
+## Current scope
+
+This release fully manages hostname-based HTTP/HTTPS routes. TCP fields are compatibility metadata only: the built-in ingress and WebUI do not create public TCP listeners or report those records as published or healthy. Server uses one SQLite database and is not an active-active cluster.
+
+Existing Caddy, Nginx, or Nginx Proxy Manager installations can remain in place. See [Reverse proxy integration](/en/install/reverse-proxy). They are optional integrations, not prerequisites.

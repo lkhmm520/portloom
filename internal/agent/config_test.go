@@ -82,3 +82,34 @@ func TestLoadConfigRequiresHTTPSUnlessExplicitlyAllowedForLoopback(t *testing.T)
 		})
 	}
 }
+
+func TestLoadConfigReadsOptionalManagedSSHPublicKeyPath(t *testing.T) {
+	env := map[string]string{
+		"TM_SERVER_URL": "https://manager.example.com", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token",
+		"TM_SSH_USER": "tunnel", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/data/ssh/id_ed25519",
+		"TM_SSH_PUBLIC_KEY_FILE": "/data/ssh/id_ed25519.pub", "TM_SSH_KNOWN_HOSTS_FILE": "/data/ssh/known_hosts",
+		"TM_MANAGED_SSH_ISOLATED": "true", "TM_MANAGED_SSH_READY_PATH": "/run/portloom/managed-ssh.ready", "TM_MANAGED_SSH_READY_NONCE": "generation-123",
+	}
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SSHPublicKeyFile != "/data/ssh/id_ed25519.pub" {
+		t.Fatalf("public key path = %q", cfg.SSHPublicKeyFile)
+	}
+	if !cfg.ManagedSSHIsolated || cfg.ManagedSSHReadyPath != "/run/portloom/managed-ssh.ready" || cfg.ManagedSSHReadyNonce != "generation-123" {
+		t.Fatalf("managed SSH config=%#v", cfg)
+	}
+}
+
+func TestLoadConfigRejectsUnsafeManagedSSHReadyNonce(t *testing.T) {
+	env := map[string]string{
+		"TM_SERVER_URL": "https://manager.example.com", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token",
+		"TM_SSH_USER": "tunnel", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/data/ssh/id_ed25519",
+		"TM_SSH_PUBLIC_KEY_FILE": "/data/ssh/id_ed25519.pub", "TM_SSH_KNOWN_HOSTS_FILE": "/data/ssh/known_hosts",
+		"TM_MANAGED_SSH_READY_NONCE": "bad\nnonce",
+	}
+	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
+		t.Fatal("unsafe managed SSH ready nonce accepted")
+	}
+}

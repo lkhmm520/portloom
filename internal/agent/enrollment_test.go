@@ -11,6 +11,7 @@ import (
 )
 
 func TestEnrollAndPersistCredentials(t *testing.T) {
+	var claimedToken string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/agent/enroll" {
 			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
@@ -19,11 +20,12 @@ func TestEnrollAndPersistCredentials(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request["name"] != "nas-home" || request["token"] != "one-time" {
-			t.Fatalf("request=%v", request)
+		if request["name"] != "nas-home" || request["token"] != "one-time" || len(request["request_id"]) != 64 || len(request["agent_token"]) != 64 {
+			t.Fatalf("invalid enrollment claim")
 		}
+		claimedToken = request["agent_token"]
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"agent": map[string]string{"id": "agent-1"}, "token": "long-lived"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"agent": map[string]string{"id": "agent-1"}})
 	}))
 	defer server.Close()
 
@@ -39,7 +41,7 @@ func TestEnrollAndPersistCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.ClientID != "agent-1" || loaded.Token != "long-lived" {
+	if loaded.ClientID != "agent-1" || loaded.Token != claimedToken {
 		t.Fatalf("loaded=%#v", loaded)
 	}
 	info, err := os.Stat(path)
@@ -114,5 +116,47 @@ func TestEnrollRejectsAllRedirectsBeforeForwardingOneTimeToken(t *testing.T) {
 	}
 	if redirectedRequests != 0 {
 		t.Fatalf("followed redirect %d time(s)", redirectedRequests)
+	}
+}
+
+func TestResolveCredentialsRetriesSamePendingClaimAfterLostResponse(t *testing.T) {
+	calls := 0
+	var firstRequestID, firstAgentToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		calls++
+		if calls == 1 {
+			firstRequestID, firstAgentToken = request["request_id"], request["agent_token"]
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"agent":`))
+			return
+		}
+		if request["request_id"] != firstRequestID || request["agent_token"] != firstAgentToken {
+			t.Fatal("pending enrollment claim changed across retry")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"agent": map[string]string{"id": "agent-recovered"}})
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "agent.json")
+	cfg := Config{ServerURL: server.URL, ClientName: "nas", EnrollmentToken: "one-time", StatePath: statePath, AllowInsecureHTTP: true}
+	if _, err := ResolveCredentials(context.Background(), cfg, server.Client()); err == nil {
+		t.Fatal("expected malformed first response")
+	}
+	if _, err := os.Stat(statePath + ".pending"); err != nil {
+		t.Fatalf("pending claim missing after lost response: %v", err)
+	}
+	credentials, err := ResolveCredentials(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials.ClientID != "agent-recovered" || credentials.Token != firstAgentToken {
+		t.Fatalf("credentials=%#v", credentials)
+	}
+	if _, err := os.Stat(statePath + ".pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending claim remained after success: %v", err)
 	}
 }

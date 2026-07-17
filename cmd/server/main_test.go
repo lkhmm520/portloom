@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/lkhmm520/portloom/internal/store"
 )
 
 func TestLoadConfigRequiresAdminTokenAndUsesDefaults(t *testing.T) {
@@ -54,5 +60,64 @@ func TestControlServerHasRequestReadAndWriteDeadlines(t *testing.T) {
 	}
 	if server.WriteTimeout <= 0 {
 		t.Fatalf("WriteTimeout=%s must be positive", server.WriteTimeout)
+	}
+}
+
+func TestLoadConfigReadsManagedSSHSettingsAtomically(t *testing.T) {
+	env := map[string]string{
+		"TM_ADMIN_TOKEN":              "a-very-long-admin-token",
+		"TM_AUTHORIZED_KEYS_PATH":     "/ssh/authorized_keys",
+		"TM_SSH_HOST_PUBLIC_KEY_PATH": "/ssh/ssh_host_ed25519_key.pub",
+		"TM_MANAGED_SSH_PORT":         "2222",
+		"TM_MANAGED_SSH_ISOLATED":     "true",
+	}
+	cfg, err := loadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthorizedKeysPath != "/ssh/authorized_keys" || cfg.SSHHostPublicKeyPath != "/ssh/ssh_host_ed25519_key.pub" || cfg.ManagedSSHPort != 2222 || !cfg.ManagedSSHIsolated {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	delete(env, "TM_SSH_HOST_PUBLIC_KEY_PATH")
+	if _, err := loadConfig(func(key string) string { return env[key] }); err == nil {
+		t.Fatal("partial managed SSH configuration accepted")
+	}
+}
+
+func TestSyncAuthorizedKeysRebuildsFileFromStore(t *testing.T) {
+	ctx := context.Background()
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"), store.Options{PortRangeStart: 35000, PortRangeEnd: 35001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	if err := state.CreateEnrollmentToken(ctx, "enroll", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	agent, _, err := state.ConsumeEnrollmentToken(ctx, "enroll", "nas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	algorithm, key := []byte("ssh-ed25519"), make([]byte, 32)
+	wire := make([]byte, 4+len(algorithm)+4+len(key))
+	binary.BigEndian.PutUint32(wire[:4], uint32(len(algorithm)))
+	copy(wire[4:], algorithm)
+	offset := 4 + len(algorithm)
+	binary.BigEndian.PutUint32(wire[offset:offset+4], uint32(len(key)))
+	copy(wire[offset+4:], key)
+	publicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(wire)
+	if err := state.SetAgentSSHKey(ctx, agent.ID, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := syncAuthorizedKeys(ctx, state, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "portloom-agent:"+agent.ID) {
+		t.Fatalf("body=%q", data)
 	}
 }

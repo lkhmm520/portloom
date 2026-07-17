@@ -1,10 +1,48 @@
 name: portloom-server
 services:
+  ssh-auth-init:
+    image: ${PORTLOOM_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:latest}
+    user: "0:0"
+    network_mode: none
+    entrypoint: [/bin/sh, -c]
+    command:
+      - umask 077; chown 0:0 /auth /hostkeys; chmod 0700 /auth; chmod 0755 /hostkeys; touch /auth/authorized_keys; chmod 0600 /auth/authorized_keys; chown -R 65532:65532 /auth
+    volumes:
+      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/auth
+      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/hostkeys
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    restart: "no"
+  sshd:
+    image: ${PORTLOOM_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:latest}
+    container_name: portloom-sshd
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      ssh-auth-init: { condition: service_completed_successfully }
+    environment:
+      PORTLOOM_SSH_PORT: ${TM_MANAGED_SSH_PORT:-2222}
+    volumes:
+      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/hostkeys
+      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/auth:ro
+    read_only: true
+    tmpfs:
+      - /run:size=8m,mode=0755
+      - /tmp:size=8m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, SYS_CHROOT]
   server:
     image: ${PORTLOOM_SERVER_IMAGE:-ghcr.io/lkhmm520/portloom-server:latest}
     container_name: portloom-server
     restart: unless-stopped
     network_mode: host
+    depends_on:
+      sshd: { condition: service_healthy }
     env_file: [server.env]
     environment:
       TM_LISTEN_ADDR: ${TM_LISTEN_ADDR:-127.0.0.1:8080}
@@ -12,9 +50,19 @@ services:
       TM_DATABASE_PATH: /data/portloom.db
       TM_WEB_DIR: /app/web
       TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN:?set TM_ADMIN_TOKEN in server.env}
+      TM_AUTHORIZED_KEYS_PATH: /ssh-auth/authorized_keys
+      TM_SSH_HOST_PUBLIC_KEY_PATH: /ssh-hostkeys/ssh_host_ed25519_key.pub
+      TM_MANAGED_SSH_PORT: ${TM_MANAGED_SSH_PORT:-2222}
+      TM_MANAGED_SSH_ISOLATED: ${TM_MANAGED_SSH_ISOLATED:-true}
+      TM_PUBLIC_HOST: ${TM_PUBLIC_HOST:-}
+      TM_TLS_ASK_TOKEN: ${TM_TLS_ASK_TOKEN:-}
+      TM_TLS_ASK_ADDR: ${TM_TLS_ASK_ADDR:-127.0.0.1:8082}
     volumes:
       - ${TM_SERVER_DATA_DIR:-./data/server}:/data
+      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/ssh-auth
+      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/ssh-hostkeys:ro
     read_only: true
-    tmpfs: [/tmp:size=16m,mode=1777]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

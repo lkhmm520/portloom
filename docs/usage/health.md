@@ -12,7 +12,7 @@ OpenSSH ControlMaster 是否有效，远程 `-R` 转发是否已创建。Tunnel 
 
 ## Public / Revision
 
-`desired_revision` 与 `observed_revision` 一致，且路由已启用。它表示 Agent 已应用当前期望状态，不等于外部 DNS/TLS 一定正确。
+对 HTTP 路由，`desired_revision` 与 `observed_revision` 一致、路由已启用且 Tunnel 为 up 时，Public 才显示 published；它表示 Agent 和内置 Gateway 已收敛，不等于外部 DNS/TLS 一定正确。TCP 兼容记录始终显示 `metadata only`，不计为 published 或 healthy。
 
 ## 正确的排查顺序
 
@@ -20,4 +20,4 @@ OpenSSH ControlMaster 是否有效，远程 `-R` 转发是否已创建。Tunnel 
 2. Agent 日志与 Local；
 3. VPS 回环端口和 Tunnel；
 4. Gateway 带 Host 请求；
-5. NPM、TLS、DNS 与公网请求。
+5. 公网入口、TLS、DNS 与公网请求。

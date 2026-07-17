@@ -1,61 +1,51 @@
 # Production deployment
 
-## Server state
+Choose the public ingress before deploying:
+
+- Use the easy installer's Caddy when ports 80/443 are free.
+- Deploy Server plus managed sshd behind an existing Caddy, Nginx, or NPM instance.
+- Pin every image tag and audit the Compose files for regulated environments.
+
+## Ports and traffic
+
+| Port | Default bind | Purpose |
+| --- | --- | --- |
+| 80/443 | public Caddy address | WebUI and HTTP route hostnames |
+| 2222 | public managed sshd | outbound Agent reverse tunnels |
+| 8080 | 127.0.0.1 | Server WebUI and API |
+| 8081 | 127.0.0.1 | Host-routing Gateway |
+| 20000–29999 | 127.0.0.1 | allocated SSH loopback listeners |
+
+The Agent network needs outbound access to Server ports 443 and 2222 only.
+
+## Pin images
 
 ```bash
-sudo install -d -o 65532 -g 65532 -m 0700 /opt/portloom/server
-openssl rand -hex 32
+./install-server.sh --domain portloom.example.com --version 0.2.0
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml config
+docker compose up -d
+docker compose ps
 ```
 
-Use the random value for `TM_ADMIN_TOKEN`. Keep administration and Gateway listeners on loopback or a protected private interface.
+Keep the Compose project name and volume paths during upgrades. Do not recreate the database service with ad hoc `docker run` commands.
 
-## Dedicated SSH account
+## Managed SSH boundary
 
-Create a non-administrative account with no login shell and install only Agent public keys:
+`portloom-sshd` is isolated from the host SSH service. It accepts Ed25519 public keys and remote forwarding to `127.0.0.1:*` only. It denies shell commands, TTY, X11, Agent forwarding, and user RC files.
 
-```bash
-sudo useradd --system --create-home --shell /usr/sbin/nologin tunnel
-sudo install -d -o tunnel -g tunnel -m 0700 /home/tunnel/.ssh
-```
+Server writes the `ssh-auth` volume while sshd mounts it read-only. sshd writes persistent host keys while Server mounts them read-only. Server rebuilds `authorized_keys` from SQLite at startup.
 
-Prefix each `authorized_keys` entry so command sessions, TTYs, user RC files, and non-loopback listeners are denied:
+Preserve `ssh-hostkeys/ssh_host_ed25519_key`. Replacing it correctly causes Agents to fail closed. Restore the original volume instead of disabling strict host-key checking.
 
-```text
-command="/usr/sbin/nologin",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitlisten="127.0.0.1:*" ssh-ed25519 AAAA... portloom-agent
-```
+## State and permissions
 
-Install the repository's `sshd_config` fragment:
+Back up `server-data/portloom.db`, `ssh-hostkeys/`, `.env`, `Caddyfile`, and `caddy-data/`. Server data and SSH authorization are written by UID/GID 65532. Do not solve permission errors with mode `0777`.
 
-```text
-Match User tunnel
-    AuthenticationMethods publickey
-    PasswordAuthentication no
-    KbdInteractiveAuthentication no
-    AllowTcpForwarding remote
-    GatewayPorts no
-    PermitListen 127.0.0.1:*
-    PermitTTY no
-    X11Forwarding no
-    AllowAgentForwarding no
-    PermitUserRC no
-    ForceCommand /usr/sbin/nologin
-```
+## Existing ingress
 
-Run `sshd -t` before reload. Confirm normal commands and interactive sessions are rejected while the Agent's `ssh -N -R 127.0.0.1:port:target` still works. Do not use `DisableForwarding yes`, which would also disable the required reverse tunnel.
+Remove Caddy from the easy Compose file. Keep Server on loopback or a firewall-protected private interface. Proxy the management hostname to 8080 and application hostnames to 8081 with the original Host header. See [Reverse proxy integration](/en/install/reverse-proxy). Managed sshd can remain on 2222 without changing host SSH on 22.
 
-## Keys and host verification
+## Acceptance checks
 
-```bash
-sudo install -d -o 65532 -g 65532 -m 0700 /opt/portloom/secrets
-sudo -u '#65532' ssh-keygen -t ed25519 -a 64 -N '' -f /opt/portloom/secrets/id_ed25519 -C portloom-agent
-ssh-keyscan -p 22 tunnel.example.com | sudo tee /opt/portloom/secrets/known_hosts
-sudo chown 65532:65532 /opt/portloom/secrets/*
-sudo chmod 600 /opt/portloom/secrets/id_ed25519
-sudo chmod 644 /opt/portloom/secrets/known_hosts
-```
-
-Verify the host fingerprint through a trusted server-side source. Some NAS Docker implementations report matching numeric ownership while denying a non-root bind mount read. Test an actual file open as UID 65532; use an initialized named volume when bind mounts are unreliable.
-
-## Safe migration
-
-Run old and new paths in parallel. Test the Gateway with a preserved Host header, switch one NPM hostname at a time, record the previous upstream, and compare status, content hashes, Range requests, and long-lived protocols. Stop old containers after an observation window; do not immediately delete rollback images or keys.
+Verify HTTPS WebUI login, rejected command login on 2222, Agent presence, local and tunnel health, public Host routing, automatic recovery after restarting Agent/Server/sshd, and a restore drill from backup.

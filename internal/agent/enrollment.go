@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,18 @@ type Credentials struct {
 }
 
 func Enroll(ctx context.Context, serverURL, name, enrollmentToken string, allowInsecureHTTP bool, client *http.Client) (Credentials, error) {
+	requestID, err := randomCredentialValue()
+	if err != nil {
+		return Credentials{}, err
+	}
+	agentToken, err := randomCredentialValue()
+	if err != nil {
+		return Credentials{}, err
+	}
+	return enrollWithClaim(ctx, serverURL, name, enrollmentToken, requestID, agentToken, allowInsecureHTTP, client)
+}
+
+func enrollWithClaim(ctx context.Context, serverURL, name, enrollmentToken, requestID, agentToken string, allowInsecureHTTP bool, client *http.Client) (Credentials, error) {
 	var credentials Credentials
 	base, err := parseServerURL(serverURL, allowInsecureHTTP)
 	if err != nil {
@@ -27,7 +41,13 @@ func Enroll(ctx context.Context, serverURL, name, enrollmentToken string, allowI
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(enrollmentToken) == "" {
 		return credentials, errors.New("client name and enrollment token are required")
 	}
-	payload, _ := json.Marshal(map[string]string{"name": strings.TrimSpace(name), "token": strings.TrimSpace(enrollmentToken)})
+	if len(requestID) != 64 || len(agentToken) != 64 {
+		return credentials, errors.New("invalid enrollment claim")
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"name": strings.TrimSpace(name), "token": strings.TrimSpace(enrollmentToken),
+		"request_id": requestID, "agent_token": agentToken,
+	})
 	endpoint := *base
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v1/agent/enroll"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
@@ -49,13 +69,12 @@ func Enroll(ctx context.Context, serverURL, name, enrollmentToken string, allowI
 		Agent struct {
 			ID string `json:"id"`
 		} `json:"agent"`
-		Token string `json:"token"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 64<<10))
 	if err := decoder.Decode(&response); err != nil {
 		return credentials, fmt.Errorf("decode enrollment response: %w", err)
 	}
-	credentials = Credentials{ClientID: strings.TrimSpace(response.Agent.ID), Token: strings.TrimSpace(response.Token)}
+	credentials = Credentials{ClientID: strings.TrimSpace(response.Agent.ID), Token: agentToken}
 	if err := credentials.Validate(); err != nil {
 		return Credentials{}, fmt.Errorf("invalid enrollment response: %w", err)
 	}
@@ -130,21 +149,51 @@ func ResolveCredentials(ctx context.Context, cfg Config, client *http.Client) (C
 		credentials := Credentials{ClientID: cfg.ClientID, Token: cfg.Token}
 		return credentials, credentials.Validate()
 	}
+	pendingPath := cfg.StatePath + ".pending"
 	if cfg.StatePath != "" {
 		credentials, err := LoadCredentials(cfg.StatePath)
 		if err == nil {
+			_ = os.Remove(pendingPath)
 			return credentials, nil
 		}
 		if !errors.Is(err, os.ErrNotExist) {
 			return Credentials{}, fmt.Errorf("load saved credentials: %w", err)
 		}
 	}
-	credentials, err := Enroll(ctx, cfg.ServerURL, cfg.ClientName, cfg.EnrollmentToken, cfg.AllowInsecureHTTP, client)
+	pending, err := LoadCredentials(pendingPath)
+	if errors.Is(err, os.ErrNotExist) {
+		requestID, genErr := randomCredentialValue()
+		if genErr != nil {
+			return Credentials{}, genErr
+		}
+		agentToken, genErr := randomCredentialValue()
+		if genErr != nil {
+			return Credentials{}, genErr
+		}
+		pending = Credentials{ClientID: requestID, Token: agentToken}
+		if err := SaveCredentials(pendingPath, pending); err != nil {
+			return Credentials{}, fmt.Errorf("save pending enrollment claim: %w", err)
+		}
+	} else if err != nil {
+		return Credentials{}, fmt.Errorf("load pending enrollment claim: %w", err)
+	}
+	credentials, err := enrollWithClaim(ctx, cfg.ServerURL, cfg.ClientName, cfg.EnrollmentToken, pending.ClientID, pending.Token, cfg.AllowInsecureHTTP, client)
 	if err != nil {
 		return Credentials{}, err
 	}
 	if err := SaveCredentials(cfg.StatePath, credentials); err != nil {
 		return Credentials{}, err
 	}
+	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Credentials{}, fmt.Errorf("remove pending enrollment claim: %w", err)
+	}
 	return credentials, nil
+}
+
+func randomCredentialValue() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate enrollment claim: %w", err)
+	}
+	return hex.EncodeToString(value), nil
 }

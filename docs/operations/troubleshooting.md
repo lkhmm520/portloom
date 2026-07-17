@@ -22,4 +22,4 @@ curl -i -H 'Host: app.example.com' http://127.0.0.1:8081/
 ssh -vvv -o ExitOnForwardFailure=yes tunnel@tunnel.example.com
 ```
 
-不要把删除 SQLite、Agent 状态或重建数据库当作第一步。先备份，再按 Local → Tunnel → Gateway → NPM 的顺序定位。
+不要把删除 SQLite、Agent 状态或重建数据库当作第一步。先备份，再按 Local → Tunnel → Gateway → public ingress/TLS/DNS 的顺序定位。

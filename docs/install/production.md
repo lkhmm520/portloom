@@ -1,61 +1,80 @@
 # 生产环境部署
 
-## 1. Server 数据目录
+快速开始适合一台空闲VPS。生产部署前先决定公网入口：
+
+- VPS的80/443空闲：使用简易安装器自带的Caddy；
+- 已有Caddy、Nginx或NPM：只部署Server与受管sshd，把现有入口转发到PortLoom；
+- 有合规要求：固定镜像版本，逐项审计Compose和卷权限。
+
+## 端口与数据流
+
+| 端口 | 默认监听 | 用途 |
+| --- | --- | --- |
+| 80/443 | Caddy公网地址 | WebUI和HTTP业务域名 |
+| 2222 | 受管sshd公网地址 | Agent主动建立反向隧道 |
+| 8080 | 127.0.0.1 | Server WebUI和API |
+| 8081 | 127.0.0.1 | Host路由Gateway |
+| 20000–29999 | 127.0.0.1 | 自动分配的SSH回环端口 |
+
+Agent所在网络只需要出站访问Server的443和2222。
+
+## 固定镜像版本
+
+下载发布版安装脚本并使用`--version`：
 
 ```bash
-sudo install -d -o 65532 -g 65532 -m 0700 /opt/portloom/server
-openssl rand -hex 32
+./install-server.sh --domain portloom.example.com --version 0.2.0
 ```
 
-把随机值放入 `TM_ADMIN_TOKEN`。管理与网关端口默认只监听回环地址；如果 NPM 在容器内，请使用经过防火墙保护的宿主私网地址，而不是直接开放公网。
-
-## 2. 专用 SSH 账户
-
-创建无管理权限、无登录 Shell 的 `tunnel` 用户，只安装 Agent 公钥：
+部署前执行：
 
 ```bash
-sudo useradd --system --create-home --shell /usr/sbin/nologin tunnel
-sudo install -d -o tunnel -g tunnel -m 0700 /home/tunnel/.ssh
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml config
+docker compose up -d
+docker compose ps
 ```
 
-每行 `authorized_keys` 使用以下前缀，限制命令、TTY、用户RC和监听地址：
+不要使用临时`docker run`重建数据库容器。升级时保留Compose项目名和卷路径。
+
+## 受管SSH边界
+
+`portloom-sshd`是独立容器，不修改宿主机`/etc/ssh/sshd_config`。它只允许：
+
+- Ed25519公钥认证；
+- `ssh -N -R`远程转发；
+- 绑定`127.0.0.1:*`；
+- 无Shell、无TTY、无X11、无Agent转发、无用户RC。
+
+Server对`ssh-auth`卷有写权限，sshd只读。sshd对`ssh-hostkeys`卷有写权限，Server只读。Agent不能修改自己的授权记录。Server启动时从SQLite重建`authorized_keys`，文件丢失不会永久锁死现有Agent。
+
+主机私钥保存在`ssh-hostkeys/ssh_host_ed25519_key`。更换它会触发Agent的严格主机身份校验并中止连接。恢复时应还原原卷，而不是关闭`StrictHostKeyChecking`。
+
+## 数据和权限
+
+至少备份：
 
 ```text
-command="/usr/sbin/nologin",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitlisten="127.0.0.1:*" ssh-ed25519 AAAA... portloom-agent
+server-data/portloom.db
+ssh-hostkeys/
+.env
+Caddyfile
+caddy-data/
 ```
 
-在 `sshd_config` 中加入仓库提供的限制片段：
+`server-data`和`ssh-auth`由UID/GID 65532写入。简易安装器会通过一次性容器初始化权限。不要把目录改成`0777`。
 
-```text
-Match User tunnel
-    AuthenticationMethods publickey
-    PasswordAuthentication no
-    KbdInteractiveAuthentication no
-    AllowTcpForwarding remote
-    GatewayPorts no
-    PermitListen 127.0.0.1:*
-    PermitTTY no
-    X11Forwarding no
-    AllowAgentForwarding no
-    PermitUserRC no
-    ForceCommand /usr/sbin/nologin
-```
+## 已有公网入口
 
-运行 `sshd -t` 后再 reload。验证普通命令/交互登录被拒绝，同时 Agent 的 `ssh -N -R 127.0.0.1:端口:目标`仍能建立。不要使用会关闭全部转发的`DisableForwarding yes`。
+删除简易Compose中的Caddy服务，保持Server监听回环或受防火墙保护的私网地址。管理域名转发到8080，业务域名转发到8081并保留Host，详见[反向代理接入](/install/reverse-proxy)。受管sshd仍可使用2222，不需要复用宿主22端口。
 
-## 3. 密钥与 known_hosts
+## 上线验证
 
-```bash
-sudo install -d -o 65532 -g 65532 -m 0700 /opt/portloom/secrets
-sudo -u '#65532' ssh-keygen -t ed25519 -a 64 -N '' -f /opt/portloom/secrets/id_ed25519 -C portloom-agent
-ssh-keyscan -p 22 tunnel.example.com | sudo tee /opt/portloom/secrets/known_hosts
-sudo chown 65532:65532 /opt/portloom/secrets/*
-sudo chmod 600 /opt/portloom/secrets/id_ed25519
-sudo chmod 644 /opt/portloom/secrets/known_hosts
-```
-
-通过可信渠道核对主机指纹。某些 NAS 即使 `stat` 所有者正确，非 root 容器仍可能无法读取 bind mount；务必使用实际 Agent UID 做一次 `open()` 测试，必要时改用由容器初始化的命名卷。
-
-## 4. 安全迁移
-
-新旧链路并行建立，先用 `curl -H 'Host: app.example.com' http://127.0.0.1:8081/` 验证 Gateway，再逐域名切换 NPM。每次切换记录旧上游，验证状态码、响应哈希和 Range 请求；稳定后只停止旧容器，不立即删除镜像与密钥。
+1. WebUI可以通过HTTPS登录；
+2. 普通SSH命令登录2222被拒绝；
+3. Agent显示在线；
+4. 本地服务状态为up；
+5. 隧道状态为up；
+6. 公网域名可访问并保留正确Host；
+7. 重启Agent、Server和sshd后路由会自动恢复；
+8. 备份可在隔离目录恢复。

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/managedssh"
 )
 
 type RouteSource interface {
@@ -18,12 +19,25 @@ type RouteSource interface {
 }
 
 type Handler struct {
-	routes    RouteSource
-	transport *http.Transport
+	routes                RouteSource
+	transport             *http.Transport
+	isolatedAgentBindings bool
 }
 
-func New(routes RouteSource) http.Handler {
-	return &Handler{routes: routes, transport: newTransport()}
+type Option func(*Handler)
+
+func WithIsolatedAgentBindings() Option {
+	return func(handler *Handler) { handler.isolatedAgentBindings = true }
+}
+
+func New(routes RouteSource, options ...Option) http.Handler {
+	handler := &Handler{routes: routes, transport: newTransport()}
+	for _, option := range options {
+		if option != nil {
+			option(handler)
+		}
+	}
+	return handler
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +60,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	target := &url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(selected.RemotePort)}
+	bindAddress := managedssh.LegacyBindAddress
+	if h.isolatedAgentBindings {
+		bindAddress, err = managedssh.BindAddress(selected.ClientID)
+		if err != nil {
+			http.Error(w, "gateway unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	target := &url.URL{Scheme: "http", Host: bindAddress + ":" + strconv.Itoa(selected.RemotePort)}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target)

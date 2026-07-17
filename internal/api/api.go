@@ -7,21 +7,31 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/lkhmm520/portloom/internal/authorizedkeys"
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/store"
 )
 
 const (
-	maxRequestBody   = 1 << 20
-	maxEnrollmentTTL = 30 * 24 * time.Hour
+	maxRequestBody           = 1 << 20
+	maxEnrollmentTTL         = 30 * 24 * time.Hour
+	maxSSHHostPublicKeyBytes = 16 << 10
 )
 
 type Config struct {
-	AdminToken    string
-	EnrollmentTTL time.Duration
+	AdminToken           string
+	EnrollmentTTL        time.Duration
+	AuthorizedKeysPath   string
+	SSHHostPublicKeyPath string
+	ManagedSSHPort       int
+	ManagedSSHIsolated   bool
+	ServerVersion        string
+	PublicHost           string
+	TLSAskToken          string
 }
 
 type server struct {
@@ -35,9 +45,13 @@ func New(state *store.Store, config Config) http.Handler {
 	} else if config.EnrollmentTTL > maxEnrollmentTTL {
 		config.EnrollmentTTL = maxEnrollmentTTL
 	}
+	if config.ManagedSSHPort <= 0 {
+		config.ManagedSSHPort = 2222
+	}
 	s := &server{store: state, config: config}
 	mux := http.NewServeMux()
 	// Canonical UI endpoints.
+	mux.HandleFunc("GET /api/v1/system", s.admin(s.systemInfo))
 	mux.HandleFunc("GET /api/v1/clients", s.admin(s.listClients))
 	mux.HandleFunc("GET /api/v1/enrollment-tokens", s.admin(s.listEnrollmentTokens))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.admin(s.issueEnrollmentToken))
@@ -54,6 +68,7 @@ func New(state *store.Store, config Config) http.Handler {
 	mux.HandleFunc("PUT /api/v1/admin/routes/{id}", s.admin(s.updateRoute))
 	mux.HandleFunc("DELETE /api/v1/admin/routes/{id}", s.admin(s.deleteRoute))
 	mux.HandleFunc("POST /api/v1/agent/enroll", s.enrollAgent)
+	mux.HandleFunc("PUT /api/v1/agent/ssh-key", s.agent(s.registerAgentSSHKey))
 	mux.HandleFunc("POST /api/v1/agent/heartbeat", s.agent(s.heartbeatAgent))
 	mux.HandleFunc("GET /api/v1/agent/sync", s.agent(s.syncAgent))
 	mux.HandleFunc("GET /api/v1/agent/desired", s.agent(s.syncAgent))
@@ -88,6 +103,42 @@ func (s *server) agent(next agentHandler) http.HandlerFunc {
 		}
 		next(w, r, agent)
 	}
+}
+
+func readSSHHostPublicKey(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxSSHHostPublicKeyBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxSSHHostPublicKeyBytes {
+		return "", errors.New("SSH host public key exceeds size limit")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func (s *server) systemInfo(w http.ResponseWriter, _ *http.Request) {
+	managed := strings.TrimSpace(s.config.AuthorizedKeysPath) != "" && strings.TrimSpace(s.config.SSHHostPublicKeyPath) != ""
+	response := map[string]any{"managed_ssh": managed, "version": s.config.ServerVersion}
+	if managed {
+		keyText, err := readSSHHostPublicKey(s.config.SSHHostPublicKeyPath)
+		if err != nil {
+			internalError(w)
+			return
+		}
+		key, err := authorizedkeys.Normalize(keyText)
+		if err != nil {
+			internalError(w)
+			return
+		}
+		response["ssh_port"] = s.config.ManagedSSHPort
+		response["ssh_host_key"] = key
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *server) issueEnrollmentToken(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +216,10 @@ func (s *server) createRoute(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &route); err != nil {
 		return
 	}
+	if s.routeUsesReservedDomain(route) {
+		writeError(w, http.StatusConflict, "reserved_domain")
+		return
+	}
 	created, err := s.store.CreateRoute(r.Context(), route)
 	if err != nil {
 		writeStoreError(w, err)
@@ -187,12 +242,22 @@ func (s *server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &route); err != nil {
 		return
 	}
+	if s.routeUsesReservedDomain(route) {
+		writeError(w, http.StatusConflict, "reserved_domain")
+		return
+	}
 	updated, err := s.store.UpdateRoute(r.Context(), r.PathValue("id"), route)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *server) routeUsesReservedDomain(route domain.Route) bool {
+	return route.Protocol == domain.ProtocolHTTP &&
+		domain.NormalizeHost(route.Domain) != "" &&
+		domain.NormalizeHost(route.Domain) == domain.NormalizeHost(s.config.PublicHost)
 }
 
 func (s *server) deleteRoute(w http.ResponseWriter, r *http.Request) {
@@ -205,10 +270,29 @@ func (s *server) deleteRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Token string `json:"token"`
-		Name  string `json:"name"`
+		Token      string `json:"token"`
+		Name       string `json:"name"`
+		RequestID  string `json:"request_id"`
+		AgentToken string `json:"agent_token"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	if (request.RequestID == "") != (request.AgentToken == "") {
+		writeError(w, http.StatusBadRequest, "incomplete_enrollment_claim")
+		return
+	}
+	if request.RequestID != "" {
+		agent, err := s.store.ClaimEnrollmentToken(r.Context(), request.Token, request.Name, request.RequestID, request.AgentToken)
+		if errors.Is(err, store.ErrInvalidEnrollmentToken) {
+			unauthorized(w)
+			return
+		}
+		if err != nil {
+			internalError(w)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"agent": agent})
 		return
 	}
 	agent, token, err := s.store.ConsumeEnrollmentToken(r.Context(), request.Token, request.Name)
@@ -221,6 +305,40 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"agent": agent, "token": token})
+}
+
+func (s *server) registerAgentSSHKey(w http.ResponseWriter, r *http.Request, agent domain.Agent) {
+	if strings.TrimSpace(s.config.AuthorizedKeysPath) == "" {
+		writeError(w, http.StatusServiceUnavailable, "managed_ssh_disabled")
+		return
+	}
+	var request struct {
+		PublicKey string `json:"public_key"`
+	}
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	normalized, err := authorizedkeys.Normalize(request.PublicKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_ssh_public_key")
+		return
+	}
+	err = s.store.BindAgentSSHKeyAndSync(r.Context(), agent.ID, normalized, func(keys []domain.AgentSSHKey) error {
+		entries := make([]authorizedkeys.Entry, 0, len(keys))
+		for _, key := range keys {
+			entries = append(entries, authorizedkeys.Entry{AgentID: key.AgentID, PublicKey: key.PublicKey})
+		}
+		options := []authorizedkeys.WriteOption{}
+		if s.config.ManagedSSHIsolated {
+			options = append(options, authorizedkeys.WithIsolatedBindings())
+		}
+		return authorizedkeys.Write(s.config.AuthorizedKeysPath, entries, options...)
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) heartbeatAgent(w http.ResponseWriter, r *http.Request, agent domain.Agent) {

@@ -14,7 +14,7 @@ An Agent runs on the NAS, enrolls once, stores credentials in `/data/agent.json`
 
 ## Route
 
-An HTTP route includes its domain, local target, enabled flag, and an automatically allocated VPS loopback port. TCP routes are currently control-plane metadata; the built-in Gateway only proxies HTTP by Host.
+An HTTP route includes its domain, local target, enabled flag, and an automatically allocated VPS loopback port. The WebUI creates HTTP routes only. Existing TCP records are compatibility metadata and do not represent public listeners; the built-in Gateway proxies HTTP by Host.
 
 ## Desired and observed state
 

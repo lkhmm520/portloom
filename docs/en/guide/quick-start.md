@@ -1,57 +1,69 @@
 # Five-minute quick start
 
-This page uses published GHCR images. Read [Production deployment](/en/install/production) before exposing a real environment.
+You need two Linux hosts with Docker Compose: a public VPS and a NAS or internal server. You also need a domain name.
 
-## 1. Start the Server
+## 0. Prepare DNS and the firewall
 
-```bash
-mkdir -p portloom/server && cd portloom/server
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.server.yml
-curl -Lo server.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/server.env.example
-mkdir -p data/server
-sudo chown -R 65532:65532 data/server
-chmod 700 data/server
-openssl rand -hex 32
+Point the management hostname to the VPS:
+
+```text
+portloom.example.com  A  203.0.113.10
 ```
 
-Put the generated value in `TM_ADMIN_TOKEN`, then render and start:
+If all services use the same parent domain, add one wildcard record:
 
-```bash
-docker compose --env-file server.env -f docker-compose.server.yml config
-docker compose --env-file server.env -f docker-compose.server.yml up -d
-curl --fail http://127.0.0.1:8080/healthz
+```text
+*.example.com  A  203.0.113.10
 ```
 
-## 2. Add HTTPS and restricted SSH
+Allow TCP `80`, `443`, and `2222` on the VPS. The NAS needs no inbound port.
 
-Proxy an administration hostname to port `8080`. Point application hostnames to the shared `8081` gateway and preserve `Host`. The VPS `tunnel` account must use `/usr/sbin/nologin`, deny commands and shell sessions, and permit only loopback-bound remote forwarding. See [Production deployment](/en/install/production).
+## 1. Install Server on the public host
 
-## 3. Prepare and enroll an Agent
-
-Download the templates on the NAS and create the **real key and `known_hosts` file before changing permissions**:
+Download and inspect the script before running it:
 
 ```bash
-mkdir -p portloom/agent/{data/agent,secrets} && cd portloom/agent
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.agent.yml
-curl -Lo agent.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/agent.env.example
-ssh-keygen -t ed25519 -a 64 -N '' -f secrets/id_ed25519 -C portloom-agent
-ssh-keyscan -p 22 tunnel.example.com > secrets/known_hosts
-sudo chown -R 65532:65532 data secrets
-chmod 700 data/agent secrets
-chmod 600 secrets/id_ed25519
-chmod 644 secrets/known_hosts
+curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+less install-server.sh
+chmod 0700 install-server.sh
+./install-server.sh --domain portloom.example.com
 ```
 
-Verify the host fingerprint through a trusted channel. Install `secrets/id_ed25519.pub` in the VPS `tunnel` account's `authorized_keys` using the [restricted template](/en/reference/templates). Create a one-time enrollment token, fill `agent.env`, and start:
+The installer starts three containers:
 
-```bash
-docker compose --env-file agent.env -f docker-compose.agent.yml config
-docker compose --env-file agent.env -f docker-compose.agent.yml up -d
-docker compose -f docker-compose.agent.yml logs --tail=100 agent
-```
+- `portloom-server`: WebUI, API, and route gateway;
+- `portloom-sshd`: a restricted SSH endpoint used only by PortLoom;
+- `portloom-caddy`: automatic HTTPS for the management and route hostnames.
 
-After enrollment, remove `TM_ENROLLMENT_TOKEN` and recreate the container.
+It prints the WebUI URL and a random administrator token when finished.
 
-## 4. Create a route
+## 2. Open the WebUI
 
-Select the client, enter a domain and NAS target, and enable the route. Verify Local and Tunnel are up and desired/observed revisions match before testing public HTTPS.
+Open `https://portloom.example.com` and enter the administrator token.
+
+Go to **Add Agent** and enter an Agent name, the HTTPS Server URL, the public Server hostname, and SSH port `2222`. Click **Generate command**.
+
+## 3. Install Agent on the NAS
+
+Paste the complete generated command on the NAS or internal Docker host. The installer creates an Ed25519 key, pins the Server host key, enrolls once, uploads the Agent public key, and removes the one-time enrollment token after success.
+
+The new host appears under Clients within a few seconds.
+
+## 4. Add the first route
+
+Open **Routes → Add HTTP route** and enter:
+
+| Field | Example |
+| --- | --- |
+| Name | Jellyfin |
+| Client | home-nas |
+| Protocol | HTTP |
+| Public domain | jellyfin.example.com |
+| Local host | 127.0.0.1 or a LAN service address |
+| Local port | 8096 |
+
+Wait until local and tunnel status are green, then open `https://jellyfin.example.com`.
+
+If you did not create wildcard DNS, point the route hostname to the VPS separately. Caddy requests certificates only for enabled HTTP routes in the WebUI.
+
+See [Install with Docker](/en/install/docker) for files and upgrades. Use [Production deployment](/en/install/production) when integrating an existing ingress or auditing every Compose setting.

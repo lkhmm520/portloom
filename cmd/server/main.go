@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/api"
+	"github.com/lkhmm520/portloom/internal/authorizedkeys"
+	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/gateway"
 	"github.com/lkhmm520/portloom/internal/store"
 )
@@ -27,14 +29,21 @@ var (
 )
 
 type config struct {
-	ListenAddr     string
-	GatewayAddr    string
-	DatabasePath   string
-	WebDir         string
-	AdminToken     string
-	PortRangeStart int
-	PortRangeEnd   int
-	EnrollmentTTL  time.Duration
+	ListenAddr           string
+	GatewayAddr          string
+	DatabasePath         string
+	WebDir               string
+	AdminToken           string
+	AuthorizedKeysPath   string
+	SSHHostPublicKeyPath string
+	ManagedSSHPort       int
+	ManagedSSHIsolated   bool
+	PublicHost           string
+	TLSAskToken          string
+	TLSAskAddr           string
+	PortRangeStart       int
+	PortRangeEnd         int
+	EnrollmentTTL        time.Duration
 }
 
 type envLookup func(string) string
@@ -52,7 +61,7 @@ func main() {
 func loadConfig(getenv envLookup) (config, error) {
 	cfg := config{
 		ListenAddr: "127.0.0.1:8080", GatewayAddr: "127.0.0.1:8081",
-		DatabasePath: "/data/portloom.db", WebDir: "/app/web",
+		DatabasePath: "/data/portloom.db", WebDir: "/app/web", ManagedSSHPort: 2222, TLSAskAddr: "127.0.0.1:8082",
 		PortRangeStart: 20000, PortRangeEnd: 29999, EnrollmentTTL: time.Hour,
 	}
 	setString := func(key string, target *string) {
@@ -64,8 +73,19 @@ func loadConfig(getenv envLookup) (config, error) {
 	setString("TM_GATEWAY_ADDR", &cfg.GatewayAddr)
 	setString("TM_DATABASE_PATH", &cfg.DatabasePath)
 	setString("TM_WEB_DIR", &cfg.WebDir)
+	setString("TM_AUTHORIZED_KEYS_PATH", &cfg.AuthorizedKeysPath)
+	setString("TM_SSH_HOST_PUBLIC_KEY_PATH", &cfg.SSHHostPublicKeyPath)
+	setString("TM_PUBLIC_HOST", &cfg.PublicHost)
+	setString("TM_TLS_ASK_TOKEN", &cfg.TLSAskToken)
+	setString("TM_TLS_ASK_ADDR", &cfg.TLSAskAddr)
 	cfg.AdminToken = strings.TrimSpace(getenv("TM_ADMIN_TOKEN"))
 	var err error
+	if cfg.ManagedSSHPort, err = envInt(getenv, "TM_MANAGED_SSH_PORT", cfg.ManagedSSHPort); err != nil {
+		return config{}, err
+	}
+	if cfg.ManagedSSHIsolated, err = envBool(getenv, "TM_MANAGED_SSH_ISOLATED"); err != nil {
+		return config{}, err
+	}
 	if cfg.PortRangeStart, err = envInt(getenv, "TM_PORT_RANGE_START", cfg.PortRangeStart); err != nil {
 		return config{}, err
 	}
@@ -84,15 +104,49 @@ func loadConfig(getenv envLookup) (config, error) {
 	if !filepath.IsAbs(cfg.DatabasePath) || !filepath.IsAbs(cfg.WebDir) {
 		return config{}, errors.New("database and web paths must be absolute")
 	}
+	managedPaths := cfg.AuthorizedKeysPath != "" || cfg.SSHHostPublicKeyPath != ""
+	if managedPaths && (cfg.AuthorizedKeysPath == "" || cfg.SSHHostPublicKeyPath == "") {
+		return config{}, errors.New("managed SSH paths must be configured together")
+	}
+	if managedPaths && (!filepath.IsAbs(cfg.AuthorizedKeysPath) || !filepath.IsAbs(cfg.SSHHostPublicKeyPath)) {
+		return config{}, errors.New("managed SSH paths must be absolute")
+	}
+	if cfg.ManagedSSHIsolated && !managedPaths {
+		return config{}, errors.New("managed SSH isolation requires managed SSH paths")
+	}
+	if (cfg.PublicHost == "") != (cfg.TLSAskToken == "") {
+		return config{}, errors.New("TM_PUBLIC_HOST and TM_TLS_ASK_TOKEN must be configured together")
+	}
+	if cfg.ManagedSSHPort < 1 || cfg.ManagedSSHPort > 65535 {
+		return config{}, errors.New("invalid managed SSH port")
+	}
 	if cfg.PortRangeStart < 1024 || cfg.PortRangeEnd > 65535 || cfg.PortRangeStart > cfg.PortRangeEnd {
 		return config{}, errors.New("invalid tunnel port range")
 	}
-	for _, address := range []string{cfg.ListenAddr, cfg.GatewayAddr} {
+	for _, address := range []string{cfg.ListenAddr, cfg.GatewayAddr, cfg.TLSAskAddr} {
 		if _, _, err := net.SplitHostPort(address); err != nil {
 			return config{}, fmt.Errorf("invalid listen address %q: %w", address, err)
 		}
 	}
+	if cfg.TLSAskToken != "" {
+		host, _, _ := net.SplitHostPort(cfg.TLSAskAddr)
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return config{}, errors.New("TM_TLS_ASK_ADDR must use a loopback IP")
+		}
+	}
 	return cfg, nil
+}
+
+func envBool(getenv envLookup, key string) (bool, error) {
+	switch strings.TrimSpace(getenv(key)) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false", key)
+	}
 }
 
 func envInt(getenv envLookup, key string, fallback int) (int, error) {
@@ -123,17 +177,40 @@ func run(ctx context.Context, getenv envLookup) error {
 		return err
 	}
 	defer state.Close()
+	if cfg.AuthorizedKeysPath != "" {
+		if err := syncAuthorizedKeys(ctx, state, cfg.AuthorizedKeysPath, cfg.ManagedSSHIsolated); err != nil {
+			return fmt.Errorf("rebuild managed SSH authorization: %w", err)
+		}
+	}
 
-	control := newControlServer(cfg.ListenAddr, newMainHandler(api.New(state, api.Config{AdminToken: cfg.AdminToken, EnrollmentTTL: cfg.EnrollmentTTL}), cfg.WebDir))
-	data := &http.Server{Addr: cfg.GatewayAddr, Handler: gateway.New(state), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
-	errorsChannel := make(chan error, 2)
+	apiConfig := api.Config{
+		AdminToken: cfg.AdminToken, EnrollmentTTL: cfg.EnrollmentTTL, AuthorizedKeysPath: cfg.AuthorizedKeysPath,
+		SSHHostPublicKeyPath: cfg.SSHHostPublicKeyPath, ManagedSSHPort: cfg.ManagedSSHPort,
+		ManagedSSHIsolated: cfg.ManagedSSHIsolated, ServerVersion: version,
+		PublicHost: cfg.PublicHost, TLSAskToken: cfg.TLSAskToken,
+	}
+	control := newControlServer(cfg.ListenAddr, newMainHandler(api.New(state, apiConfig), cfg.WebDir))
+	gatewayOptions := []gateway.Option{}
+	if cfg.ManagedSSHIsolated {
+		gatewayOptions = append(gatewayOptions, gateway.WithIsolatedAgentBindings())
+	}
+	data := &http.Server{Addr: cfg.GatewayAddr, Handler: gateway.New(state, gatewayOptions...), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	servers := []*http.Server{control, data}
+	serverNames := []string{"control", "gateway"}
+	if cfg.TLSAskToken != "" {
+		tlsAsk := newControlServer(cfg.TLSAskAddr, api.NewTLSAskHandler(state, apiConfig))
+		servers = append(servers, tlsAsk)
+		serverNames = append(serverNames, "TLS ask")
+	}
+	errorsChannel := make(chan error, len(servers))
 	serve := func(name string, server *http.Server) {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errorsChannel <- fmt.Errorf("%s listener: %w", name, err)
 		}
 	}
-	go serve("control", control)
-	go serve("gateway", data)
+	for index, server := range servers {
+		go serve(serverNames[index], server)
+	}
 	log.Printf("control listening on %s; gateway listening on %s", cfg.ListenAddr, cfg.GatewayAddr)
 
 	var runErr error
@@ -143,13 +220,26 @@ func run(ctx context.Context, getenv envLookup) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := control.Shutdown(shutdownCtx); err != nil && runErr == nil {
-		runErr = err
-	}
-	if err := data.Shutdown(shutdownCtx); err != nil && runErr == nil {
-		runErr = err
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil && runErr == nil {
+			runErr = err
+		}
 	}
 	return runErr
+}
+
+func syncAuthorizedKeys(ctx context.Context, state *store.Store, path string, isolated ...bool) error {
+	return state.SyncAgentSSHKeys(ctx, func(keys []domain.AgentSSHKey) error {
+		entries := make([]authorizedkeys.Entry, 0, len(keys))
+		for _, key := range keys {
+			entries = append(entries, authorizedkeys.Entry{AgentID: key.AgentID, PublicKey: key.PublicKey})
+		}
+		options := []authorizedkeys.WriteOption{}
+		if len(isolated) > 0 && isolated[0] {
+			options = append(options, authorizedkeys.WithIsolatedBindings())
+		}
+		return authorizedkeys.Write(path, entries, options...)
+	})
 }
 
 func newControlServer(addr string, handler http.Handler) *http.Server {

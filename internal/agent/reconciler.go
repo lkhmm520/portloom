@@ -19,13 +19,26 @@ type Reconciler struct {
 	mu               sync.Mutex
 	runner           SSHRunner
 	checker          HealthChecker
+	remoteBindHost   string
 	active           map[string]sshctl.Forward
 	masterReady      bool
 	observedRevision int64
 }
 
-func NewReconciler(runner SSHRunner, checker HealthChecker) *Reconciler {
-	return &Reconciler{runner: runner, checker: checker, active: map[string]sshctl.Forward{}}
+type ReconcilerOption func(*Reconciler)
+
+func WithRemoteBindHost(host string) ReconcilerOption {
+	return func(reconciler *Reconciler) { reconciler.remoteBindHost = host }
+}
+
+func NewReconciler(runner SSHRunner, checker HealthChecker, options ...ReconcilerOption) *Reconciler {
+	reconciler := &Reconciler{runner: runner, checker: checker, remoteBindHost: "127.0.0.1", active: map[string]sshctl.Forward{}}
+	for _, option := range options {
+		if option != nil {
+			option(reconciler)
+		}
+	}
+	return reconciler
 }
 func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) ObservedState {
 	r.mu.Lock()
@@ -84,7 +97,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 			observed.Routes = append(observed.Routes, observation)
 			continue
 		}
-		forward := sshctl.Forward{BindHost: "127.0.0.1", RemotePort: route.RemotePort, LocalHost: route.LocalHost, LocalPort: route.LocalPort}
+		forward := sshctl.Forward{BindHost: r.remoteBindHost, RemotePort: route.RemotePort, LocalHost: route.LocalHost, LocalPort: route.LocalPort}
 		if err := r.checker.Check(ctx, route.LocalHost, route.LocalPort); err != nil {
 			observation.LocalStatus = StatusDown
 			observation.TunnelStatus = StatusDown

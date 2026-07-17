@@ -6,7 +6,7 @@
 - Agent `/data/agent.json`;
 - SSH private key and verified `known_hosts`;
 - secret-safe Compose/environment configuration;
-- current NPM upstream mappings.
+- current external-ingress upstream mappings, if any.
 
 Use SQLite online backup for zero downtime. Stop the Server before a raw file copy unless database, WAL, and SHM are captured consistently.
 
@@ -23,4 +23,4 @@ Upgrade one component at a time: Server, ordinary Web Agent, then high-throughpu
 
 ## Roll back
 
-Pin the prior image tag and recreate through Compose. A complete ingress rollback also restores previous NPM upstreams; starting an old tunnel container alone is not enough.
+Pin the prior image tag and recreate through Compose. A complete ingress rollback also restores previous external-ingress upstreams; starting an old tunnel container alone is not enough.

@@ -2,16 +2,15 @@
 layout: home
 hero:
   name: PortLoom
-  text: 把反向隧道织成可管理的基础设施
-  tagline: 为 NAS 与家庭实验室设计的自托管控制平面。保留现有 NPM、TLS 与 DNS，用受限 OpenSSH 隧道、分层健康状态和可回滚配置发布服务。
-  image: { src: /hero-loom.svg, alt: PortLoom 动态隧道编织图 }
+  text: 稳定、可靠、快速的隧道代理
+  tagline: 把 NAS、家庭服务器和内网 Web 服务发布到公网。公网主机运行 Server，内网主机运行 Agent；Agent 主动建立加密隧道，内网无需开放入站端口。
+  image: { src: /hero-loom.svg, alt: PortLoom 隧道连接示意图 }
   actions:
-    - { theme: brand, text: 五分钟快速开始, link: /guide/quick-start }
-    - { theme: alt, text: Docker 安装, link: /install/docker }
-    - { theme: alt, text: GitHub, link: 'https://github.com/lkhmm520/portloom' }
+    - { theme: brand, text: 开始安装, link: /guide/quick-start }
+    - { theme: alt, text: 它如何工作, link: /guide/what-is-portloom }
 features:
-  - { title: 不替换现有入口, details: 'NPM 继续负责证书与 HTTPS；多个域名共享 Host 路由网关，迁移时旧路径可并行保留。' }
-  - { title: 每一层都可观察, details: '分别展示本地服务、SSH 隧道和期望/观测版本，避免“进程还在”被误判为服务可用。' }
-  - { title: 默认收紧权限, details: '专用 SSH 账户、固定主机指纹、loopback 转发、非 root 容器、只读根文件系统与最小 Linux 能力。' }
+  - { title: 两台主机，一条安装命令, details: '先在公网 Docker 主机安装 Server，再从 WebUI 复制一条命令到 NAS。密钥、主机指纹和注册令牌由安装流程自动处理。' }
+  - { title: 路由都在 WebUI 配置, details: '选择 Agent，填写内网地址、端口和公网域名。新增或修改服务不需要再编辑 SSH 命令。' }
+  - { title: 安全默认值已经配好, details: 'Agent 主动出站连接；SSH 账户没有 Shell，只允许回环反向转发。容器不挂载 Docker socket。' }
 ---
 <HomeFlow />

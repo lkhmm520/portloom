@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,28 @@ func TestRouteLifecycleAllocatesPortsAndAdvancesRevision(t *testing.T) {
 	}
 	if state.DesiredRevision != 4 || len(routes) != 1 || routes[0].ID != created.ID {
 		t.Fatalf("unexpected sync: agent=%+v routes=%+v", state, routes)
+	}
+}
+
+func TestHTTPDomainEnabledUsesExactEnabledHTTPRoute(t *testing.T) {
+	ctx := context.Background()
+	s, agent := enrolledStore(t, 31100, 31102)
+	for _, route := range []domain.Route{
+		{ClientID: agent.ID, Name: "enabled", Protocol: domain.ProtocolHTTP, Domain: "app.example.com", LocalHost: "localhost", LocalPort: 8080, Enabled: true},
+		{ClientID: agent.ID, Name: "disabled", Protocol: domain.ProtocolHTTP, Domain: "off.example.com", LocalHost: "localhost", LocalPort: 8081, Enabled: false},
+	} {
+		if _, err := s.CreateRoute(ctx, route); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for domainName, want := range map[string]bool{"app.example.com": true, "off.example.com": false, "missing.example.com": false} {
+		got, err := s.HTTPDomainEnabled(ctx, domainName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("HTTPDomainEnabled(%q)=%v want %v", domainName, got, want)
+		}
 	}
 }
 
@@ -458,4 +481,37 @@ func enrollAdditionalAgent(t *testing.T, s *Store, name string) domain.Agent {
 		t.Fatal(err)
 	}
 	return agent
+}
+
+func TestEnrollmentClaimIsIdempotentForSameRequestOnly(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "claims.db"), Options{PortRangeStart: 32000, PortRangeEnd: 32010})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.CreateEnrollmentToken(ctx, "one-time", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requestID, agentToken := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	first, err := s.ClaimEnrollmentToken(ctx, "one-time", "nas", requestID, agentToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.ClaimEnrollmentToken(ctx, "one-time", "nas", requestID, agentToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.ID != first.ID {
+		t.Fatalf("retry agent=%q want=%q", retry.ID, first.ID)
+	}
+	if authenticated, err := s.AuthenticateAgent(ctx, agentToken); err != nil || authenticated.ID != first.ID {
+		t.Fatalf("authenticate claimed agent: %#v %v", authenticated, err)
+	}
+	if _, err := s.ClaimEnrollmentToken(ctx, "one-time", "nas", strings.Repeat("c", 64), agentToken); !errors.Is(err, ErrInvalidEnrollmentToken) {
+		t.Fatalf("different request reused token: %v", err)
+	}
+	if _, err := s.ClaimEnrollmentToken(ctx, "one-time", "nas", requestID, strings.Repeat("d", 64)); !errors.Is(err, ErrInvalidEnrollmentToken) {
+		t.Fatalf("same request accepted a different Agent token: %v", err)
+	}
 }

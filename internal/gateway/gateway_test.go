@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/managedssh"
 )
 
 type staticRouteSource struct {
@@ -163,6 +164,31 @@ func TestGatewayDoesNotExposeLoopbackDialErrors(t *testing.T) {
 	body := response.Body.String()
 	if strings.Contains(body, "127.0.0.1") || strings.Contains(body, strconv.Itoa(port)) || body != "upstream unavailable\n" {
 		t.Fatalf("unsafe gateway error body=%q", body)
+	}
+}
+
+func TestGatewayUsesRouteAgentIsolatedBindAddress(t *testing.T) {
+	const agentID = "agent-isolated"
+	address, err := managedssh.BindAddress(agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp4", net.JoinHostPort(address, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	backend.Listener = listener
+	backend.Start()
+	defer backend.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	route := domain.Route{ClientID: agentID, Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up"}
+	response := serveGateway(t, New(&staticRouteSource{routes: []domain.Route{route}}, WithIsolatedAgentBindings()))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

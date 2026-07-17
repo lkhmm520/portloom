@@ -1,7 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -10,16 +12,72 @@ const app = fs.readFileSync(path.join(root, "web/assets/app.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "web/index.html"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 
-test("enrollment token UI uses the expiry-only request contract", () => {
+test("add-agent UI keeps token API narrow and generates a shell-safe version-pinned install command", () => {
   const tokenForm = html.match(/<form id="token-form"[\s\S]*?<\/form>/)?.[0] || "";
-  assert.ok(tokenForm, "token form exists");
-  assert.doesNotMatch(tokenForm, /name="name"/);
-  assert.match(tokenForm, /name="expires_in"/);
+  assert.ok(tokenForm, "add-agent form exists");
+  for (const name of ["name", "server_url", "ssh_host", "expires_in"]) assert.match(tokenForm, new RegExp(`name="${name}"`));
 
   const createToken = app.match(/async function createToken\(event\)[\s\S]*?\n  }/)?.[0] || "";
   assert.ok(createToken, "createToken function exists");
-  assert.doesNotMatch(createToken, /data\.get\("name"\)/);
-  assert.doesNotMatch(createToken, /\{\s*name:/);
+  assert.match(createToken, /expires_in:/);
+  assert.doesNotMatch(createToken, /body:\s*JSON\.stringify\(\{[^}]*name:/);
+
+  const quoteSource = app.match(/function shellQuote\(value\)[\s\S]*?\n  }/)?.[0] || "";
+  const versionSource = app.match(/function isSafeImageTag\(value\)[\s\S]*?\n  }/)?.[0] || "";
+  const commandSource = app.match(/function buildAgentInstallCommand\(options\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.ok(quoteSource && versionSource && commandSource, "command helpers exist");
+  const { buildAgentInstallCommand } = Function(`"use strict"; ${quoteSource}; ${versionSource}; ${commandSource}; return { buildAgentInstallCommand };`)();
+  assert.match(createToken, /version:\s*state\.system\.version/);
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "portloom-web-command-"));
+  const bin = path.join(temp, "bin");
+  const argsFile = path.join(temp, "args.txt");
+  const injectedFile = path.join(temp, "injected");
+  const fakeInstaller = path.join(temp, "fake-installer.sh");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(fakeInstaller, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGS_OUT"\n');
+  fs.writeFileSync(path.join(bin, "curl"), '#!/bin/sh\ncp "$FAKE_INSTALLER" "$2"\n', { mode: 0o755 });
+  const command = buildAgentInstallCommand({
+    serverURL: "https://loom.example.com/a path", name: `nas'; touch '${injectedFile}'; echo '`, token: "one-time-token",
+    sshHost: "vps.example.com", sshPort: 2222, sshHostKey: "ssh-ed25519 AAAAhostkey", version: "1.2.3"
+  });
+  assert.match(command, /install-agent\.sh/);
+  assert.match(command, /--server-url 'https:\/\/loom\.example\.com\/a path'/);
+  assert.match(command, /--token 'one-time-token'/);
+  assert.match(command, /--version '1\.2\.3'/);
+  assert.match(command, /'"'"'/, "embedded quote is escaped");
+  assert.doesNotMatch(command, /--name nas';/, "name is never emitted unquoted");
+  const executed = spawnSync("/bin/sh", ["-c", command], {
+    cwd: temp, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ARGS_OUT: argsFile, FAKE_INSTALLER: fakeInstaller }
+  });
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.equal(fs.existsSync(injectedFile), false, "quoted Agent name cannot execute shell commands");
+  assert.deepEqual(fs.readFileSync(argsFile, "utf8").trim().split("\n"), [
+    "--server-url", "https://loom.example.com/a path", "--name", `nas'; touch '${injectedFile}'; echo '`,
+    "--token", "one-time-token", "--ssh-host", "vps.example.com", "--ssh-port", "2222",
+    "--ssh-host-key", "ssh-ed25519 AAAAhostkey", "--version", "1.2.3"
+  ]);
+
+  for (const version of ["v1.2.3; touch /tmp/pwned", "../../latest", "tag$(id)", "", "a".repeat(129)]) {
+    const fallback = buildAgentInstallCommand({
+      serverURL: "https://loom.example.com", name: "nas", token: "token", sshHost: "vps.example.com",
+      sshPort: 2222, sshHostKey: "ssh-ed25519 AAAAhostkey", version
+    });
+    assert.doesNotMatch(fallback, /--version/, `unsafe version falls back to installer default: ${version}`);
+  }
+});
+
+test("route creation exposes HTTP only and explains the built-in ingress boundary", () => {
+  const routeForm = html.match(/<form id="route-form"[\s\S]*?<\/form>/)?.[0] || "";
+  assert.ok(routeForm, "route form exists");
+  assert.match(routeForm, /value="http"/i);
+  assert.doesNotMatch(routeForm, /value="tcp"|name="public_port"/i);
+  assert.match(html, /built-in public ingress fully supports HTTP\/HTTPS routes only/i);
+
+  const payload = app.match(/function routePayload\(form\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.match(payload, /protocol:\s*"http"/);
+  assert.match(payload, /public_port:\s*0/);
+  assert.doesNotMatch(payload, /data\.get\("protocol"\)|protocol\s*===\s*"tcp"/);
 });
 
 test("enrollment token list identifies rows by safe token ID", () => {
@@ -50,6 +108,10 @@ test("public route status mirrors the gateway convergence gate at runtime", () =
   const base = { enabled: true, local_status: "up", tunnel_status: "up", observed_revision: 3, desired_revision: 3 };
   assert.equal(hooks.routePublicStatus(base), "published");
   assert.equal(hooks.routeHealthy(base), true);
+  const tcp = { ...base, protocol: "tcp" };
+  assert.equal(hooks.routePublicStatus(tcp), "metadata only");
+  assert.equal(hooks.routePublicStatus({ ...tcp, enabled: false }), "metadata only");
+  assert.equal(hooks.routeHealthy(tcp), false);
   for (const tunnel_status of ["UP", " up ", "connected", "healthy", "active", "ready", "down"]) {
     const route = { ...base, tunnel_status };
     assert.equal(hooks.routePublicStatus(route), "pending", tunnel_status);
@@ -107,7 +169,7 @@ test("401 and 403 responses perform a visible logout", async () => {
   assert.equal(nodes["#admin-token"].type, "password");
   assert.equal(nodes["#toggle-token"].textContent, "Show");
   assert.equal(nodes["#created-token"].textContent, "");
-  assert.equal(nodes["#copy-token-button"].textContent, "Copy");
+  assert.equal(nodes["#copy-token-button"].textContent, "Copy command");
   assert.equal(nodes["#admin-token"].focused, true);
   assert.deepEqual(events, ["close-route", "close-token", "focus"]);
 });
@@ -134,7 +196,7 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
     await login("  valid-admin-token  ");
     assert.equal(state.token, "valid-admin-token"); assert.equal(saved["token-key"], "valid-admin-token");
     assert.equal(nodes["#admin-token"].value, ""); assert.equal(nodes["#admin-token"].type, "password"); assert.equal(nodes["#toggle-token"].textContent, "Show");
-    assert.equal(nodes["#created-token"].textContent, ""); assert.equal(nodes["#copy-token-button"].textContent, "Copy");
+    assert.equal(nodes["#created-token"].textContent, ""); assert.equal(nodes["#copy-token-button"].textContent, "Copy command");
     assert.equal(nodes["#login-screen"].hidden, true); assert.equal(nodes["#app"].hidden, false); assert.equal(nodes["#login-error"].hidden, true);
   }
   {
@@ -154,7 +216,7 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
   const lifecycle = Function("$", `"use strict"; ${clearCreatedSource}; ${bindSecretSource}; return { clearCreatedToken, bindSecretDialogCleanup };`)(selector => secretNodes[selector]);
   lifecycle.bindSecretDialogCleanup();
   dialog.dispatchEvent(new Event("close"));
-  assert.equal(secretNodes["#created-token"].textContent, ""); assert.equal(secretNodes["#copy-token-button"].textContent, "Copy");
+  assert.equal(secretNodes["#created-token"].textContent, ""); assert.equal(secretNodes["#copy-token-button"].textContent, "Copy command");
 
   let resolveCopy;
   const pendingCopy = new Promise(resolve => { resolveCopy = resolve; });
@@ -167,7 +229,7 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
   const copying = copyCreatedToken();
   logout(); resolveCopy(); await copying;
   assert.equal(authState.token, ""); assert.equal(removed, true); assert.equal(dialog.open, false);
-  assert.equal(secretNodes["#created-token"].textContent, ""); assert.equal(secretNodes["#copy-token-button"].textContent, "Copy");
+  assert.equal(secretNodes["#created-token"].textContent, ""); assert.equal(secretNodes["#copy-token-button"].textContent, "Copy command");
 });
 
 test("newer login and logout invalidate older pending login attempts", async () => {
@@ -177,7 +239,7 @@ test("newer login and logout invalidate older pending login attempts", async () 
   const nodes = {
     "#app": { hidden: true }, "#login-screen": { hidden: false }, "#login-error": { hidden: true, textContent: "" },
     "#admin-token": { value: "", type: "password", focus() {} }, "#toggle-token": { textContent: "Show" },
-    "#created-token": { textContent: "" }, "#copy-token-button": { textContent: "Copy" }
+    "#created-token": { textContent: "" }, "#copy-token-button": { textContent: "Copy command" }
   };
   const state = { token: "" }; const saved = {}; const loads = [];
   const loadAll = options => new Promise((resolve, reject) => loads.push({ resolve, reject, options }));

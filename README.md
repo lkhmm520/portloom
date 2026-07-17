@@ -1,87 +1,113 @@
 <div align="center">
   <img src="docs/public/logo.svg" width="92" alt="PortLoom logo" />
   <h1>PortLoom</h1>
-  <p><strong>把反向 SSH 隧道织成可管理、可观察、可回滚的基础设施。</strong></p>
-  <p>面向 NAS、家庭实验室与小型自托管环境的轻量控制平面。</p>
-
-  <p>
-    <a href="README.md">简体中文</a> · <a href="README.en.md">English</a>
-  </p>
-
+  <p><strong>用一条 Agent 命令，把内网 HTTP/HTTPS 服务安全发布到公网。</strong></p>
+  <p>面向 NAS、家庭实验室与小型自托管环境的反向 SSH 隧道控制平面。</p>
+  <p><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
   <p>
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/lkhmm520/portloom/actions/workflows/test.yml/badge.svg" /></a>
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml/badge.svg" /></a>
-    <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20docs-0f9f72" /></a>
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white" />
+    <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20sshd%20%7C%20docs-0f9f72" /></a>
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25.12+-00ADD8?logo=go&logoColor=white" />
   </p>
-
-  <p>
-    <a href="https://docs.961121.xyz/"><strong>官方文档</strong></a> ·
-    <a href="#五分钟开始">快速开始</a> ·
-    <a href="https://github.com/lkhmm520/portloom/issues">问题反馈</a>
-  </p>
+  <p><a href="https://docs.961121.xyz/"><strong>官方文档</strong></a> · <a href="#五分钟开始">快速开始</a> · <a href="https://github.com/lkhmm520/portloom/issues">问题反馈</a></p>
 </div>
 
 ---
 
-PortLoom 不替换你已有的 Nginx Proxy Manager、证书、DNS 或 OpenSSH。它负责保存期望状态、分配安全的回环端口、协调 NAS Agent 建立 `ssh -R` 转发，并把本地服务、SSH 隧道与公网收敛状态分层展示。
+PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server、受管 sshd 与 Caddy，一台 NAS 或内网主机运行 Agent。安装 Server 后，在 WebUI 生成一条 Agent 命令，再在 WebUI 添加 HTTP 路由即可；默认路径不要求预先配置 Nginx Proxy Manager 或修改宿主 OpenSSH。
 
-## 为什么选择 PortLoom
-
-| 能力 | 说明 |
-| --- | --- |
-| **保留现有入口** | NPM 继续负责 TLS；业务域名统一转发到 Host Gateway |
-| **分层可观察** | 本地服务、SSH 转发、desired/observed revision 分开判断 |
-| **最小权限** | 专用 SSH 账户、固定主机指纹、loopback 转发、非 root 只读容器 |
-| **安全注册** | 一次性、可过期 Token；每个 Agent 使用独立长期凭据 |
-| **低运维成本** | 单 Go Server、单 Go Agent、SQLite，无外部数据库 |
-| **迁移可回滚** | 新旧隧道可并行验证，逐域名切换，不强行接管 DNS/NPM |
+当前内置公网入口完整支持按域名发布 **HTTP/HTTPS** 服务。TCP 字段只作为兼容元数据保留，不会自动创建公网 TCP 监听，也不会在 WebUI 中显示为 published/healthy。
 
 ## 工作原理
 
 ```text
-Browser ── HTTPS ──> NPM ── Host ──> PortLoom Gateway :8081
-                       │                      │
-                       │ admin               ▼
-                       └──────────> Server + SQLite
-                                              ▲
-                                              │ desired / observed
-NAS service <── Agent <──── OpenSSH -R ───────┘
+                         公网 Docker 主机
+浏览器 ──HTTPS──> Caddy ──Host──> PortLoom Gateway
+                    │                  │
+                    │ 管理域名         ▼
+                    └──────────> Server + SQLite
+                                         │ 授权
+                                         ▼
+                                  managed sshd :2222
+                                         ▲
+                                         │ Agent 发起 OpenSSH -R
+                                         │
+内网 HTTP 服务 <──────── Agent <────────┘
+                         NAS / 内网 Docker 主机
 ```
 
-- **Server `:8080`**：控制台、管理 API、注册与 Agent 心跳；
-- **Gateway `:8081`**：按 HTTP `Host` 选择已启用路由；
-- **Agent**：探测 NAS 本地服务，维护 OpenSSH ControlMaster 与远程转发；
-- **NPM**：继续负责公网证书、HTTPS 重定向与域名入口。
+| 能力 | 说明 |
+| --- | --- |
+| **两主机安装** | 公网主机安装 Server 套件，内网主机只安装 Agent |
+| **一条 Agent 命令** | WebUI 生成带一次性令牌、固定主机公钥和匹配版本的 Shell 安装命令 |
+| **内置 HTTPS** | Caddy 为管理域名和已启用的 HTTP 路由按需申请证书 |
+| **受管 SSH** | 独立 sshd 容器仅允许公钥认证和回环远程转发，不修改宿主 sshd |
+| **分层状态** | 本地服务、SSH 隧道和 HTTP 公网发布状态分别展示 |
+| **小型控制面** | Go Server、Go Agent、SQLite，无外部数据库或 Docker socket |
 
 ## 五分钟开始
 
-### 1. 启动 Server
+### 准备
+
+- 公网 VPS 与 NAS/内网主机均已安装 Docker Engine 24+ 和 Compose v2；
+- 管理域名（例如 `portloom.example.com`）已解析到 VPS；
+- VPS 放行 TCP `80`、`443`、`2222`，且 `80/443` 未被占用；NAS 无需开放入站端口。
+
+### 1. 在公网主机安装 Server
 
 ```bash
-mkdir -p portloom/server && cd portloom/server
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.server.yml
-curl -Lo server.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/server.env.example
-mkdir -p data/server
-sudo chown -R 65532:65532 data/server
-openssl rand -hex 32  # 写入 server.env 的 TM_ADMIN_TOKEN
-docker compose --env-file server.env -f docker-compose.server.yml up -d
-curl --fail http://127.0.0.1:8080/healthz
+curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+less install-server.sh
+chmod 0700 install-server.sh
+./install-server.sh --domain portloom.example.com
 ```
 
-### 2. 注册 NAS Agent
+安装器启动 `portloom-server`、`portloom-sshd` 和 `portloom-caddy`，最后输出 WebUI 地址与随机管理员令牌。
 
-在控制台创建一次性注册令牌，然后：
+### 2. 在 WebUI 添加 Agent
 
-```bash
-mkdir -p portloom/agent/{data/agent,secrets} && cd portloom/agent
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.agent.yml
-curl -Lo agent.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/agent.env.example
-# 填写控制面、SSH、令牌和密钥路径
-docker compose --env-file agent.env -f docker-compose.agent.yml up -d
-```
+打开 `https://portloom.example.com` 并登录。进入 **Add Agent**，填写 Agent 名称、Server URL、公网 Server 主机和 SSH 端口，然后点击 **Generate command**。
 
-注册成功后，从 `agent.env` 删除 `TM_ENROLLMENT_TOKEN`。生产环境还需要配置受限 SSH 账户、固定 `known_hosts`、NPM 管理域名与业务域名；请按[生产部署文档](https://docs.961121.xyz/install/production)操作。
+### 3. 在 NAS 执行一条命令
+
+把 WebUI 生成的完整命令粘贴到 NAS 或内网 Docker 主机。Agent 安装器会生成独立 Ed25519 密钥、固定 Server 主机公钥、用一次性令牌注册并启动 Agent；注册成功后配置中不再保留该令牌。
+
+### 4. 在 WebUI 添加 HTTP 路由
+
+进入 **Routes → Add HTTP route**，选择 Agent，填写公网域名、本地服务地址和端口，例如：
+
+| 字段 | 示例 |
+| --- | --- |
+| Name | Jellyfin |
+| Client | home-nas |
+| Public domain | jellyfin.example.com |
+| Local host | 127.0.0.1 |
+| Local port | 8096 |
+
+如未配置通配符 DNS，请把该业务域名另行解析到 VPS。保存后等待 Local、Tunnel 与 Public 状态收敛，再访问 `https://jellyfin.example.com`。
+
+详细步骤见[五分钟快速开始](https://docs.961121.xyz/guide/quick-start)与[Docker 安装](https://docs.961121.xyz/install/docker)。
+
+## 进阶可选集成
+
+默认安装已包含 Caddy 与专用 sshd。只有在公网主机已有入口或有特殊合规/网络要求时，才需要：
+
+- 把现有 Caddy、Nginx 或 Nginx Proxy Manager 接到 PortLoom 的 `8080/8081` 上游；
+- 省略受管 sshd，改用经过加固的宿主 OpenSSH 与专用非管理员账户。
+
+这些不是新安装的前置条件。参见[生产环境部署](https://docs.961121.xyz/install/production)和[反向代理接入](https://docs.961121.xyz/install/reverse-proxy)。
+
+## Docker 镜像
+
+| 组件 | 镜像 |
+| --- | --- |
+| Server + WebUI + HTTP Gateway | `ghcr.io/lkhmm520/portloom-server:latest` |
+| Agent | `ghcr.io/lkhmm520/portloom-agent:latest` |
+| 受管 SSH 服务 | `ghcr.io/lkhmm520/portloom-sshd:latest` |
+| 文档站 | `ghcr.io/lkhmm520/portloom-docs:latest` |
+
+稳定版 `vX.Y.Z` Git Tag 会发布完整语义化版本、主/次版本、`sha-*` 和 `latest`；预发布不覆盖 `latest`，手动发布只生成 `edge` 与 `sha-*`。生产环境应固定完整版本。WebUI 仅在 `/api/v1/system` 返回安全镜像 Tag 时，才把同版本传给 Agent 安装器。
 
 ## 从源码运行 Server
 
@@ -96,50 +122,11 @@ mkdir -p "$(pwd)/data"
 ./bin/portloom-server
 ```
 
-控制台把管理员 Token 保存在当前标签页的 `sessionStorage` 中，并通过 **HTTP Authorization header using the Bearer scheme** 发送；关闭会话或退出登录后清除。
+WebUI 把管理员 Token 保存在当前标签页的 `sessionStorage`，并通过 **HTTP Authorization header using the Bearer scheme** 发送；退出登录或关闭会话后清除。
 
-## Docker 镜像
+## 开发与文档
 
-| 组件 | 镜像 |
-| --- | --- |
-| Server + Web 控制台 | `ghcr.io/lkhmm520/portloom-server:latest` |
-| NAS Agent | `ghcr.io/lkhmm520/portloom-agent:latest` |
-| 官方文档站 | `ghcr.io/lkhmm520/portloom-docs:latest` |
-
-严格的稳定版 `vX.Y.Z` Git Tag 会发布语义化版本、主版本/次版本、`sha-*` 和 `latest`；预发布 Tag 不会覆盖 `latest`，手动发布仅生成 `edge` 与 `sha-*`。生产环境建议固定完整版本。
-
-## 文档
-
-> 官网当前通过PortLoom自托管；如需启用GitHub Pages备用发布，请在仓库变量中设置 `ENABLE_GITHUB_PAGES=true`。
-
-- [认识 PortLoom](https://docs.961121.xyz/guide/what-is-portloom)
-- [Docker 安装](https://docs.961121.xyz/install/docker)
-- [生产环境部署](https://docs.961121.xyz/install/production)
-- [配置参考](https://docs.961121.xyz/reference/configuration)
-- [HTTP API](https://docs.961121.xyz/reference/api)
-- [故障排查](https://docs.961121.xyz/operations/troubleshooting)
-- [Compose 模板下载](https://docs.961121.xyz/reference/templates)
-
-本地运行文档：
-
-开发预览：
-
-```bash
-npm ci
-npm run docs:dev
-```
-
-或者构建静态站与容器：
-
-```bash
-npm ci
-npm run docs:build
-docker build -f Dockerfile.docs -t portloom-docs:local .
-```
-
-## 开发与验证
-
-要求 Go 1.24+、Node.js 20+，Docker 可选：
+要求 Go 1.25.12+、Node.js 20+，Docker 用于镜像和端到端验证：
 
 ```bash
 go mod download
@@ -147,22 +134,24 @@ npm ci
 make check
 make test-race
 make build
-make docker-build VERSION=local
+npm run docs:build
 ```
+
+文档开发可运行 `npm run docs:dev`。中英文入口分别位于[中文文档](https://docs.961121.xyz/)与[English docs](https://docs.961121.xyz/en/)。
 
 ## 当前边界
 
 - 当前 Server 预期单实例运行，不支持 active/active SQLite 写入；
-- Gateway 仅处理 HTTP Host 路由；TCP 路由目前主要保存控制平面元数据；
-- `tunnel_group` 当前保存为元数据。需要 Web/媒体独立 SSH 主连接时，请使用 `examples/docker-compose.dual-agent.yml`。
+- 内置公网入口只完整支持 HTTP/HTTPS Host 路由；已有 TCP 记录仅为控制平面元数据；
+- `tunnel_group` 当前保存为元数据；需要独立 SSH 主连接时使用多个 Agent/Client。
 
 ## 安全
 
-不要把管理端口或分配的 SSH 回环端口直接暴露到公网。使用专用非管理员 SSH 账户、`GatewayPorts no`、只读密钥挂载和经过核验的 `known_hosts`。安全问题请避免在公开 Issue 中粘贴 Token、私钥或完整环境文件。
+不要把管理监听、Gateway 或自动分配的 SSH 回环端口直接暴露到公网。保持 Agent 出站连接、固定 Server 主机公钥、回环远程转发、只读密钥挂载与最小容器权限。不要在公开 Issue 中粘贴 Token、私钥或完整环境文件。
 
-## 参与项目
+## 参与项目与发布验收
 
-欢迎提交 Issue 和 Pull Request。提交前请运行 `make check`、`make test-race` 与 `npm run docs:build`。中英文文档目录保持同结构，Compose 示例以仓库 `examples/` 为唯一来源。
+欢迎提交 Issue 和 Pull Request。提交前运行 `make check`、`make test-race` 与 `npm run docs:build`。首次公开发布完成前，文档站上的安装脚本与 `portloom-sshd` GHCR 镜像不能视为可用发布物；发布后必须按[发布验收清单](https://docs.961121.xyz/operations/release-checklist)验证脚本下载、四个镜像、版本固定和完整两主机流程。
 
 ## 许可证
 

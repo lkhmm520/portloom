@@ -291,12 +291,14 @@ test("console defaults to complete Simplified Chinese and can persistently switc
   assert.equal(i18n.translate("en", "nav.dashboard"), "Dashboard");
   assert.deepEqual(Object.keys(i18n.messages["zh-CN"]).sort(), Object.keys(i18n.messages.en).sort(), "Chinese and English dictionaries expose the same keys");
 
-  const keys = [...html.matchAll(/data-i18n(?:-(?:placeholder|aria-label|title))?="([^"]+)"/g)].map(match => match[1]);
+  const keys = [...html.matchAll(/data-i18n(?:-(?:placeholder|aria-label|title|content))?="([^"]+)"/g)].map(match => match[1]);
+  assert.ok(keys.includes("meta.description"), "content attributes are included in the static translation key audit");
   assert.ok(keys.length > 50, "all visible static copy is marked for translation");
   for (const locale of ["zh-CN", "en"]) {
     for (const key of keys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing ${key}`);
   }
-  const dynamicKeys = [...app.matchAll(/\bt\("([^"]+)"/g)].map(match => match[1]);
+  const dynamicKeys = [...app.matchAll(/["']((?:common|language|meta|login|brand|nav|api|top|updated|page|context|metrics|dashboard|clients|tokens|routes|table|dialog|form|agent|confirm|status|error)\.[A-Za-z][A-Za-z0-9_.-]*)["']/g)].map(match => match[1]);
+  assert.ok(dynamicKeys.includes("context.addRouteShort"), "configured runtime keys are included in the dynamic translation audit");
   for (const locale of ["zh-CN", "en"]) {
     for (const key of dynamicKeys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing runtime key ${key}`);
   }
@@ -305,6 +307,40 @@ test("console defaults to complete Simplified Chinese and can persistently switc
   assert.match(app, /localStorage\.getItem\(LANGUAGE_KEY\)/);
   assert.match(app, /localStorage\.setItem\(LANGUAGE_KEY, state\.locale\)/);
   assert.match(app, /document\.documentElement\.lang = state\.locale/);
+});
+
+test("client count is grammatical in English", () => {
+  const i18n = require("./i18n.js");
+  const source = app.match(/function clientCountLabel\(count\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.ok(source, "clientCountLabel function exists");
+  const label = Function("t", `"use strict"; ${source}; return clientCountLabel;`)((key, params) => i18n.translate("en", key, params));
+  assert.equal(label(1), "1 client");
+  assert.equal(label(2), "2 clients");
+});
+
+test("TCP automatic port exposure is localized", () => {
+  const i18n = require("./i18n.js");
+  const source = app.match(/function routeExposure\(route\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.ok(source, "routeExposure function exists");
+  const build = locale => Function("t", `"use strict"; ${source}; return routeExposure;`)((key, params) => i18n.translate(locale, key, params));
+  assert.equal(build("zh-CN")({ protocol: "tcp", public_port: 0 }), "TCP：自动分配");
+  assert.equal(build("en")({ protocol: "tcp", public_port: 0 }), "TCP: auto");
+});
+
+test("narrow sticky headers use compact localized context actions", () => {
+  const css = fs.readFileSync(path.join(root, "web/assets/app.css"), "utf8");
+  const source = app.match(/function updateContextAction\(\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.ok(source, "updateContextAction function exists");
+  const button = { hidden: true, dataset: {}, textContent: "" };
+  const update = Function("state", "$", "t", `"use strict"; ${source}; return updateContextAction;`)(
+    { view: "routes" },
+    () => button,
+    key => ({ "context.addRoute": "Add HTTP route", "context.addRouteShort": "Add route" })[key] || key
+  );
+  update();
+  assert.equal(button.textContent, "Add HTTP route");
+  assert.equal(button.dataset.shortLabel, "Add route");
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*#context-action-button::after\s*\{[^}]*content:\s*attr\(data-short-label\)/);
 });
 
 test("each module uses one sticky title and action row", () => {

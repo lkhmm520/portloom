@@ -205,6 +205,10 @@ dialog::backdrop { background: rgb(2 6 11 / 78%); backdrop-filter: blur(4px); }
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .span-2 { grid-column: auto; }
 }
+@media (max-width: 520px) {
+  #context-action-button { font-size: 0; white-space: nowrap; }
+  #context-action-button::after { content: attr(data-short-label); font-size: .72rem; }
+}
 
 .command-field { align-items: flex-start; }
 .command-field code { max-height: 16rem; overflow: auto; white-space: pre-wrap; }

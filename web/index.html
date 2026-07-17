@@ -1,68 +1,77 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="PortLoom administration console">
+  <meta name="description" content="PortLoom administration console" data-i18n-content="meta.description">
   <title>PortLoom</title>
   <link rel="stylesheet" href="/assets/app.css">
+  <script defer src="/assets/i18n.js"></script>
   <script defer src="/assets/app.js"></script>
 </head>
 <body>
   <div id="login-screen" class="login-screen" aria-labelledby="login-title">
     <form id="login-form" class="login-card">
-      <div class="brand-mark" aria-hidden="true">TM</div>
-      <p class="eyebrow">Secure control plane</p>
+      <div class="login-toolbar">
+        <div class="brand-mark" aria-hidden="true">TM</div>
+        <button class="button ghost compact language-toggle" data-language-toggle type="button">English</button>
+      </div>
+      <p class="eyebrow" data-i18n="login.eyebrow">Secure control plane</p>
       <h1 id="login-title">PortLoom</h1>
-      <p class="muted">Enter the server administrator token. It is sent as a Bearer token and kept only for this browser session.</p>
-      <label for="admin-token">Administrator token</label>
+      <p class="muted" data-i18n="login.description">Enter the server administrator token. It is sent as a Bearer token and kept only for this browser session.</p>
+      <label for="admin-token" data-i18n="login.tokenLabel">Administrator token</label>
       <div class="secret-input">
         <input id="admin-token" name="token" type="password" autocomplete="current-password" required autofocus>
-        <button id="toggle-token" class="button ghost compact" type="button" aria-label="Show token">Show</button>
+        <button id="toggle-token" class="button ghost compact" type="button" aria-label="Show token" data-i18n="common.show" data-i18n-aria-label="common.show">Show</button>
       </div>
-      <button class="button primary full" type="submit">Sign in</button>
+      <button class="button primary full" type="submit" data-i18n="login.signIn">Sign in</button>
       <p id="login-error" class="form-error" role="alert" hidden></p>
     </form>
   </div>
 
   <div id="app" class="app-shell" hidden>
     <aside class="sidebar">
-      <div class="brand"><div class="brand-mark" aria-hidden="true">TM</div><div><strong>PortLoom</strong><span>Administration</span></div></div>
-      <nav aria-label="Main navigation">
-        <button class="nav-item active" data-view="dashboard"><span aria-hidden="true">◫</span> Dashboard</button>
-        <button class="nav-item" data-view="clients"><span aria-hidden="true">◎</span> Clients</button>
-        <button class="nav-item" data-view="tokens"><span aria-hidden="true">＋</span> Add Agent</button>
-        <button class="nav-item" data-view="routes"><span aria-hidden="true">⇄</span> Routes</button>
+      <div class="brand"><div class="brand-mark" aria-hidden="true">TM</div><div><strong>PortLoom</strong><span data-i18n="brand.administration">Administration</span></div></div>
+      <nav aria-label="Main navigation" data-i18n-aria-label="nav.aria">
+        <button class="nav-item active" data-view="dashboard"><span aria-hidden="true">◫</span><b data-i18n="nav.dashboard">Dashboard</b></button>
+        <button class="nav-item" data-view="clients"><span aria-hidden="true">◎</span><b data-i18n="nav.clients">Clients</b></button>
+        <button class="nav-item" data-view="tokens"><span aria-hidden="true">＋</span><b data-i18n="nav.addAgent">Add Agent</b></button>
+        <button class="nav-item" data-view="routes"><span aria-hidden="true">⇄</span><b data-i18n="nav.routes">Routes</b></button>
       </nav>
-      <div class="sidebar-footer"><span id="api-indicator" class="connection"><i></i> API unknown</span><button id="logout-button" class="button ghost full" type="button">Sign out</button></div>
+      <div class="sidebar-footer"><span id="api-indicator" class="connection"><i></i><span data-i18n="api.unknown"> API unknown</span></span><button id="logout-button" class="button ghost full" type="button" data-i18n="common.signOut">Sign out</button></div>
     </aside>
 
     <main>
       <header class="topbar">
-        <div><p class="eyebrow">Control plane</p><h1 id="page-title">Dashboard</h1></div>
-        <div class="topbar-actions"><time id="last-updated">Not updated</time><button id="refresh-button" class="button secondary" type="button">Refresh</button></div>
+        <div class="topbar-title"><p class="eyebrow" data-i18n="top.controlPlane">Control plane</p><h1 id="page-title">Dashboard</h1></div>
+        <div class="topbar-actions">
+          <time id="last-updated" data-i18n="updated.never">Not updated</time>
+          <button class="button ghost compact language-toggle" data-language-toggle type="button">English</button>
+          <button id="refresh-button" class="button secondary" type="button" data-i18n="common.refresh">Refresh</button>
+          <button id="context-action-button" class="button primary" type="button" hidden></button>
+        </div>
       </header>
       <div id="notice" class="notice" role="status" hidden></div>
 
       <section id="view-dashboard" class="view active" aria-labelledby="page-title">
         <div class="metric-grid">
-          <article class="metric"><span>Clients online</span><strong id="metric-clients">—</strong><small id="metric-clients-detail">Waiting for data</small></article>
-          <article class="metric"><span>HTTP routes enabled</span><strong id="metric-routes">—</strong><small id="metric-routes-detail">Waiting for data</small></article>
-          <article class="metric"><span>HTTP routes healthy</span><strong id="metric-tunnels">—</strong><small id="metric-tunnels-detail">Waiting for data</small></article>
-          <article class="metric"><span>Revision drift</span><strong id="metric-drift">—</strong><small id="metric-drift-detail">Waiting for data</small></article>
+          <article class="metric"><span data-i18n="metrics.clientsOnline">Clients online</span><strong id="metric-clients">—</strong><small id="metric-clients-detail" data-i18n="metrics.waiting">Waiting for data</small></article>
+          <article class="metric"><span data-i18n="metrics.routesEnabled">HTTP routes enabled</span><strong id="metric-routes">—</strong><small id="metric-routes-detail" data-i18n="metrics.waiting">Waiting for data</small></article>
+          <article class="metric"><span data-i18n="metrics.routesHealthy">HTTP routes healthy</span><strong id="metric-tunnels">—</strong><small id="metric-tunnels-detail" data-i18n="metrics.waiting">Waiting for data</small></article>
+          <article class="metric"><span data-i18n="metrics.revisionDrift">Revision drift</span><strong id="metric-drift">—</strong><small id="metric-drift-detail" data-i18n="metrics.waiting">Waiting for data</small></article>
         </div>
         <div class="panel-grid">
           <article class="panel span-2">
-            <div class="panel-heading"><div><p class="eyebrow">Live overview</p><h2>Route health</h2></div><button class="text-button" data-goto="routes">Manage routes →</button></div>
-            <div id="dashboard-routes" class="route-health-list empty-state">No route data loaded.</div>
+            <div class="panel-heading"><div><p class="eyebrow" data-i18n="dashboard.liveOverview">Live overview</p><h2 data-i18n="dashboard.routeHealth">Route health</h2></div><button class="text-button" data-goto="routes" data-i18n="dashboard.manageRoutes">Manage routes →</button></div>
+            <div id="dashboard-routes" class="route-health-list empty-state" data-i18n="dashboard.noRouteData">No route data loaded.</div>
           </article>
           <article class="panel">
-            <div class="panel-heading"><div><p class="eyebrow">Status model</p><h2>Three layers</h2></div></div>
+            <div class="panel-heading"><div><p class="eyebrow" data-i18n="dashboard.statusModel">Status model</p><h2 data-i18n="dashboard.threeLayers">Three layers</h2></div></div>
             <ol class="layer-legend">
-              <li><span class="layer-number">1</span><div><strong>Local service</strong><small>Agent can reach the target on the NAS.</small></div></li>
-              <li><span class="layer-number">2</span><div><strong>SSH tunnel</strong><small>Remote forward is established.</small></div></li>
-              <li><span class="layer-number">3</span><div><strong>Public exposure</strong><small>Gateway configuration is converged.</small></div></li>
+              <li><span class="layer-number">1</span><div><strong data-i18n="dashboard.localService">Local service</strong><small data-i18n="dashboard.localDescription">Agent can reach the target on the NAS.</small></div></li>
+              <li><span class="layer-number">2</span><div><strong data-i18n="dashboard.sshTunnel">SSH tunnel</strong><small data-i18n="dashboard.sshDescription">Remote forward is established.</small></div></li>
+              <li><span class="layer-number">3</span><div><strong data-i18n="dashboard.publicExposure">Public exposure</strong><small data-i18n="dashboard.publicDescription">Gateway configuration is converged.</small></div></li>
             </ol>
           </article>
         </div>
@@ -70,26 +79,26 @@
 
       <section id="view-clients" class="view" aria-labelledby="page-title">
         <article class="panel">
-          <div class="panel-heading"><div><p class="eyebrow">Enrolled agents</p><h2>Clients</h2></div><span id="client-count" class="count-pill">0 clients</span></div>
-          <div class="table-wrap"><table><thead><tr><th>Client</th><th>Connection</th><th>Revisions</th><th>Version</th><th>Last seen</th></tr></thead><tbody id="clients-body"></tbody></table></div>
-          <div id="clients-empty" class="empty-state">No clients have enrolled yet.</div>
+          <div class="panel-heading"><p class="eyebrow" data-i18n="clients.enrolled">Enrolled agents</p><span id="client-count" class="count-pill">0 clients</span></div>
+          <div class="table-wrap"><table><thead><tr><th data-i18n="table.client">Client</th><th data-i18n="table.connection">Connection</th><th data-i18n="table.revisions">Revisions</th><th data-i18n="table.version">Version</th><th data-i18n="table.lastSeen">Last seen</th></tr></thead><tbody id="clients-body"></tbody></table></div>
+          <div id="clients-empty" class="empty-state" data-i18n="clients.empty">No clients have enrolled yet.</div>
         </article>
       </section>
 
       <section id="view-tokens" class="view" aria-labelledby="page-title">
         <article class="panel">
-          <div class="panel-heading"><div><p class="eyebrow">Connect another Docker host</p><h2>Add an Agent</h2></div><button id="new-token-button" class="button primary" type="button">Generate install command</button></div>
-          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Created</th><th>Expires</th><th>Used by</th></tr></thead><tbody id="tokens-body"></tbody></table></div>
-          <div id="tokens-empty" class="empty-state">No enrollment tokens exist.</div>
+          <div class="panel-heading"><p class="eyebrow" data-i18n="tokens.connectHost">Connect another Docker host</p></div>
+          <div class="table-wrap"><table><thead><tr><th data-i18n="table.id">ID</th><th data-i18n="table.status">Status</th><th data-i18n="table.created">Created</th><th data-i18n="table.expires">Expires</th><th data-i18n="table.usedBy">Used by</th></tr></thead><tbody id="tokens-body"></tbody></table></div>
+          <div id="tokens-empty" class="empty-state" data-i18n="tokens.empty">No enrollment tokens exist.</div>
         </article>
       </section>
 
       <section id="view-routes" class="view" aria-labelledby="page-title">
         <article class="panel">
-          <div class="panel-heading"><div><p class="eyebrow">Desired configuration</p><h2>Routes</h2></div><button id="new-route-button" class="button primary" type="button">Add HTTP route</button></div>
-          <p class="muted">The built-in public ingress fully supports HTTP/HTTPS routes only. Existing TCP records are shown as metadata, not as published listeners.</p>
-          <div class="table-wrap route-table-wrap"><table><thead><tr><th>Route</th><th>Target</th><th>Exposure</th><th>Layered status</th><th>Revision</th><th class="align-right">Actions</th></tr></thead><tbody id="routes-body"></tbody></table></div>
-          <div id="routes-empty" class="empty-state">No HTTP routes configured. Add one to publish a local web service.</div>
+          <div class="panel-heading"><p class="eyebrow" data-i18n="routes.desiredConfiguration">Desired configuration</p></div>
+          <p class="muted panel-copy" data-i18n="routes.boundary">The built-in public ingress fully supports HTTP/HTTPS routes only. Existing TCP records are shown as metadata, not as published listeners.</p>
+          <div class="table-wrap route-table-wrap"><table><thead><tr><th data-i18n="table.route">Route</th><th data-i18n="table.target">Target</th><th data-i18n="table.exposure">Exposure</th><th data-i18n="table.layeredStatus">Layered status</th><th data-i18n="table.revision">Revision</th><th class="align-right" data-i18n="table.actions">Actions</th></tr></thead><tbody id="routes-body"></tbody></table></div>
+          <div id="routes-empty" class="empty-state" data-i18n="routes.empty">No HTTP routes configured. Add one to publish a local web service.</div>
         </article>
       </section>
     </main>
@@ -97,56 +106,56 @@
 
   <dialog id="route-dialog">
     <form id="route-form" class="dialog-card">
-      <div class="dialog-heading"><div><p class="eyebrow">Desired route</p><h2 id="route-dialog-title">Add route</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="dialog.desiredRoute">Desired route</p><h2 id="route-dialog-title">Add route</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
       <input id="route-id" name="id" type="hidden">
       <div class="form-grid">
-        <label class="span-2">Name<input name="name" required maxlength="80" placeholder="Media server"></label>
-        <label>Client<select id="route-client" name="client_id" required></select></label>
-        <label>Protocol<select id="route-protocol" disabled><option value="http">HTTP/HTTPS</option></select></label>
-        <label class="span-2">Public domain<input name="domain" required maxlength="253" placeholder="media.example.com"></label>
-        <label>Local host<input name="local_host" required value="127.0.0.1" placeholder="127.0.0.1"></label>
-        <label>Local port<input name="local_port" type="number" min="1" max="65535" required placeholder="8080"></label>
-        <label>Tunnel group<input name="tunnel_group" value="web" required maxlength="80"></label>
-        <label class="switch-row span-2"><input name="enabled" type="checkbox" checked><span class="switch" aria-hidden="true"></span><span><strong>Enabled</strong><small>Include this route in the desired agent configuration.</small></span></label>
+        <label class="span-2"><span data-i18n="form.name">Name</span><input name="name" required maxlength="80" placeholder="Media server" data-i18n-placeholder="form.namePlaceholder"></label>
+        <label><span data-i18n="form.client">Client</span><select id="route-client" name="client_id" required></select></label>
+        <label><span data-i18n="form.protocol">Protocol</span><select id="route-protocol" disabled><option value="http">HTTP/HTTPS</option></select></label>
+        <label class="span-2"><span data-i18n="form.publicDomain">Public domain</span><input name="domain" required maxlength="253" placeholder="media.example.com"></label>
+        <label><span data-i18n="form.localHost">Local host</span><input name="local_host" required value="127.0.0.1" placeholder="127.0.0.1"></label>
+        <label><span data-i18n="form.localPort">Local port</span><input name="local_port" type="number" min="1" max="65535" required placeholder="8080"></label>
+        <label><span data-i18n="form.tunnelGroup">Tunnel group</span><input name="tunnel_group" value="web" required maxlength="80"></label>
+        <label class="switch-row span-2"><input name="enabled" type="checkbox" checked><span class="switch" aria-hidden="true"></span><span><strong data-i18n="form.enabled">Enabled</strong><small data-i18n="form.enabledDescription">Include this route in the desired agent configuration.</small></span></label>
       </div>
-      <p class="muted">PortLoom's built-in public ingress fully supports HTTP/HTTPS routes only.</p>
+      <p class="muted" data-i18n="routes.boundaryShort">PortLoom's built-in public ingress fully supports HTTP/HTTPS routes only.</p>
       <p id="route-form-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button class="button primary" type="submit">Save route</button></div>
+      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button" data-i18n="common.cancel">Cancel</button><button class="button primary" type="submit" data-i18n="form.saveRoute">Save route</button></div>
     </form>
   </dialog>
 
   <dialog id="token-dialog">
     <form id="token-form" class="dialog-card">
-      <div class="dialog-heading"><div><p class="eyebrow">Second Docker host</p><h2>Add an Agent</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
-      <p class="muted">Enter the address this Agent can use to reach the Server. PortLoom will generate one command for the NAS or internal host.</p>
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="agent.secondHost">Second Docker host</p><h2 data-i18n="agent.add">Add an Agent</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
+      <p class="muted" data-i18n="agent.description">Enter the address this Agent can use to reach the Server. PortLoom will generate one command for the NAS or internal host.</p>
       <div class="form-grid">
-        <label class="span-2">Agent name<input name="name" required maxlength="80" placeholder="home-nas"></label>
-        <label class="span-2">Server URL<input name="server_url" type="url" required placeholder="https://portloom.example.com"></label>
-        <label>Public Server host<input name="ssh_host" required maxlength="253" placeholder="vps.example.com"></label>
-        <label>SSH tunnel port<input name="ssh_port" type="number" min="1" max="65535" required value="2222"></label>
-        <label class="span-2">Install command valid for<select name="expires_in"><option value="1h">1 hour</option><option value="6h">6 hours</option><option value="24h" selected>24 hours</option></select></label>
+        <label class="span-2"><span data-i18n="agent.name">Agent name</span><input name="name" required maxlength="80" placeholder="home-nas"></label>
+        <label class="span-2"><span data-i18n="agent.serverURL">Server URL</span><input name="server_url" type="url" required placeholder="https://portloom.example.com"></label>
+        <label><span data-i18n="agent.publicHost">Public Server host</span><input name="ssh_host" required maxlength="253" placeholder="vps.example.com"></label>
+        <label><span data-i18n="agent.sshPort">SSH tunnel port</span><input name="ssh_port" type="number" min="1" max="65535" required value="2222"></label>
+        <label class="span-2"><span data-i18n="agent.validFor">Install command valid for</span><select name="expires_in"><option value="1h" data-i18n="agent.oneHour">1 hour</option><option value="6h" data-i18n="agent.sixHours">6 hours</option><option value="24h" selected data-i18n="agent.twentyFourHours">24 hours</option></select></label>
       </div>
       <p id="token-form-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button class="button primary" type="submit">Generate command</button></div>
+      <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button" data-i18n="common.cancel">Cancel</button><button class="button primary" type="submit" data-i18n="agent.generate">Generate command</button></div>
     </form>
   </dialog>
 
   <dialog id="secret-dialog">
     <div class="dialog-card narrow">
-      <div class="dialog-heading"><div><p class="eyebrow">Run on the internal host</p><h2>Agent install command</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></div>
-      <p class="muted">Copy this command to the NAS or internal Docker host. It installs only the Agent, not the Server.</p>
-      <div class="copy-field command-field"><code id="created-token"></code><button id="copy-token-button" class="button secondary" type="button">Copy command</button></div>
-      <div class="warning-box">The command contains a one-time credential. It expires automatically and is removed from the Agent configuration after enrollment.</div>
-      <div class="dialog-actions"><button class="button primary" data-close-dialog type="button">Done</button></div>
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="secret.runInternal">Run on the internal host</p><h2 data-i18n="secret.installCommand">Agent install command</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
+      <p class="muted" data-i18n="secret.description">Copy this command to the NAS or internal Docker host. It installs only the Agent, not the Server.</p>
+      <div class="copy-field command-field"><code id="created-token"></code><button id="copy-token-button" class="button secondary" type="button" data-i18n="common.copyCommand">Copy command</button></div>
+      <div class="warning-box" data-i18n="secret.warning">The command contains a one-time credential. It expires automatically and is removed from the Agent configuration after enrollment.</div>
+      <div class="dialog-actions"><button class="button primary" data-close-dialog type="button" data-i18n="common.done">Done</button></div>
     </div>
   </dialog>
 
   <dialog id="confirm-dialog">
     <form method="dialog" class="dialog-card narrow">
-      <div class="dialog-heading"><div><p class="eyebrow">Confirm action</p><h2>Delete route?</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="confirm.action">Confirm action</p><h2 data-i18n="confirm.deleteRoute">Delete route?</h2></div><button class="icon-button" value="cancel" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
       <p id="confirm-message" class="muted"></p>
-      <div class="warning-box">The agent will remove the corresponding remote forward after it receives the new revision.</div>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button danger" value="confirm">Delete route</button></div>
+      <div class="warning-box" data-i18n="confirm.warning">The agent will remove the corresponding remote forward after it receives the new revision.</div>
+      <div class="dialog-actions"><button class="button secondary" value="cancel" data-i18n="common.cancel">Cancel</button><button class="button danger" value="confirm" data-i18n="confirm.delete">Delete route</button></div>
     </form>
   </dialog>
 </body>

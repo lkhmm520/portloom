@@ -56,6 +56,8 @@ small { color: var(--muted); }
 
 .login-screen { display: grid; min-height: 100vh; place-items: center; padding: 1.25rem; background: radial-gradient(circle at center, #142d2c 0, transparent 26rem); }
 .login-card { width: min(440px, 100%); padding: clamp(1.6rem, 5vw, 2.5rem); border: 1px solid var(--border); border-radius: 20px; background: rgb(14 22 33 / 95%); box-shadow: var(--shadow); }
+.login-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.2rem; }
+.language-toggle { min-width: 72px; }
 .login-card h1 { margin: .4rem 0 1rem; font-size: 2rem; }
 .login-card > label { display: block; margin: 1.5rem 0 .45rem; color: var(--muted); font-size: .78rem; font-weight: 650; }
 .login-card .full { margin-top: .85rem; }
@@ -73,6 +75,7 @@ small { color: var(--muted); }
 .sidebar nav { display: grid; gap: .35rem; }
 .nav-item { display: flex; align-items: center; gap: .72rem; width: 100%; padding: .7rem .75rem; border-radius: 9px; background: transparent; color: var(--muted); font-size: .84rem; text-align: left; }
 .nav-item span { width: 1.1rem; font-size: 1.05rem; text-align: center; }
+.nav-item b { font-weight: inherit; }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: linear-gradient(90deg, rgb(87 230 177 / 16%), rgb(87 230 177 / 4%)); color: var(--accent); }
 .sidebar-footer { display: grid; gap: .7rem; margin-top: auto; padding-top: 1rem; }
@@ -81,9 +84,10 @@ small { color: var(--muted); }
 .connection.online i { background: var(--accent); box-shadow: 0 0 0 4px rgb(87 230 177 / 10%); }
 .connection.offline i { background: var(--danger); }
 
-main { min-height: 100vh; margin-left: 238px; padding: 1.7rem clamp(1rem, 3vw, 2.7rem) 3rem; }
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.7rem; }
-.topbar-actions { display: flex; align-items: center; gap: .9rem; }
+main { min-height: 100vh; margin-left: 238px; padding: 0 clamp(1rem, 3vw, 2.7rem) 3rem; }
+.topbar { position: sticky; z-index: 20; top: 0; display: flex; min-height: 94px; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.7rem; padding: 1.05rem 0; border-bottom: 1px solid rgb(36 52 72 / 82%); background: rgb(8 13 20 / 88%); backdrop-filter: blur(18px); }
+.topbar-title { min-width: 0; }
+.topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; }
 .topbar time { color: var(--muted); font-size: .7rem; }
 .notice { margin: -1rem 0 1.25rem; padding: .75rem 1rem; border: 1px solid var(--border-bright); border-radius: 10px; background: var(--surface-2); font-size: .82rem; }
 .notice.error { border-color: #71323a; color: #ffb5b5; }
@@ -102,6 +106,7 @@ main { min-height: 100vh; margin-left: 238px; padding: 1.7rem clamp(1rem, 3vw, 2
 .panel { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: rgb(14 22 33 / 92%); box-shadow: 0 8px 30px rgb(0 0 0 / 12%); }
 .panel-heading { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
 .panel-heading .eyebrow { margin-bottom: .2rem; }
+.panel-copy { margin: 0; padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
 .count-pill { padding: .3rem .55rem; border-radius: 99px; background: var(--surface-3); color: var(--muted); font-size: .7rem; }
 
 .table-wrap { overflow-x: auto; }
@@ -183,8 +188,12 @@ dialog::backdrop { background: rgb(2 6 11 / 78%); backdrop-filter: blur(4px); }
   .sidebar nav { display: grid; width: 100%; grid-template-columns: repeat(4, 1fr); }
   .nav-item { flex-direction: column; gap: .1rem; padding: .35rem .15rem; font-size: .6rem; text-align: center; }
   .nav-item span { font-size: 1rem; }
-  main { margin-left: 0; padding: 1.2rem .8rem 2rem; }
-  .topbar { align-items: flex-start; }
+  main { margin-left: 0; padding: 0 .8rem 2rem; }
+  .topbar { min-height: 76px; gap: .6rem; margin-bottom: 1rem; padding: .65rem 0; }
+  .topbar-title .eyebrow { display: none; }
+  .topbar-title h1 { font-size: 1.28rem; }
+  .topbar-actions { gap: .4rem; }
+  .topbar-actions .button { min-height: 36px; padding: .45rem .62rem; font-size: .72rem; }
   .topbar time { display: none; }
   .metric-grid { gap: .65rem; }
   .metric { padding: .9rem; }

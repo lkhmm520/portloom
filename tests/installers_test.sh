@@ -25,8 +25,13 @@ env_value() {
 bash -n "$server"; bash -n "$agent"
 "$server" --help | grep -q 'public Docker host'
 "$agent" --help | grep -q 'internal Docker host'
-expected_tls_ask="127.0.0.1:\$tls_ask_port/api/v1/tls/allow"
-grep -Fq "$expected_tls_ask" "$server"
+grep -q 'TM_EDGE_HTTP_ADDR: :\${PORTLOOM_HTTP_PORT}' "$server"
+grep -q 'TM_EDGE_HTTPS_ADDR: :\${PORTLOOM_HTTPS_PORT}' "$server"
+grep -q 'TM_HEALTHCHECK_URL: http://127.0.0.1:\${PORTLOOM_WEB_PORT}/healthz' "$server"
+grep -q 'cap_add: \[NET_BIND_SERVICE\]' "$server"
+! grep -q 'cap_add:.*NET_BIND_SERVICE' "$repo/deploy/server/docker-compose.yml"
+! grep -q 'cap_add:.*NET_BIND_SERVICE' "$repo/examples/docker-compose.server.yml"
+! grep -q 'container_name: portloom-caddy' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED: "true"' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED=true' "$agent"
 
@@ -49,7 +54,11 @@ expect_reject 'invalid --version' "$agent" "${base_agent[@]}" --version $'latest
 expect_reject 'unsafe or empty Agent name' "$agent" --server-url https://loom.example.com --name 'bad;name' --token "$token" \
   --ssh-host vps.example.com --ssh-port 2222 --ssh-host-key 'ssh-ed25519 AAAA'
 
-for spec in '--web-port 80' '--web-port 443' '--web-port 8081' '--web-port 8082' '--ssh-port 80' '--ssh-port 443' '--ssh-port 8081' '--ssh-port 8082' '--web-port 2222 --ssh-port 2222'; do
+for bad_domain in 'console.example.com:443' 'console..example.com' '127.0.0.1' '127.1' '2130706433' 'localhost' '2001:db8::1' "$(printf 'a%.0s' {1..64}).example.com"; do
+  expect_reject '--domain must be a valid DNS name' "$server" --domain "$bad_domain"
+done
+
+for spec in '--web-port 80' '--web-port 443' '--web-port 8081' '--ssh-port 80' '--ssh-port 443' '--ssh-port 8081' '--web-port 2222 --ssh-port 2222'; do
   read -r -a port_args <<< "$spec"
   expect_reject 'port conflict' "$server" --domain loom.example.com "${port_args[@]}"
 done
@@ -66,6 +75,7 @@ if [ "${FAKE_ASSERT_NO_LOCK_FD:-}" = 1 ] && [ -e /proc/$$/fd/9 ]; then
 fi
 printf '%q ' "$@" >> "${FAKE_DOCKER_LOG:?}"
 printf '\n' >> "$FAKE_DOCKER_LOG"
+if [ -n "${FAKE_FAIL_DOCKER_MATCH:-}" ] && [[ " $* " == *"$FAKE_FAIL_DOCKER_MATCH"* ]]; then echo 'injected docker failure' >&2; exit 43; fi
 if [ "${1:-}" = compose ] && [ "${2:-}" = version ]; then exit 0; fi
 if [ "${1:-}" = compose ]; then
   if [[ " $* " == *' up '* ]] && [ -n "${FAKE_AGENT_READY:-}" ]; then
@@ -82,6 +92,7 @@ if [ "${1:-}" = compose ]; then
   exit 0
 fi
 [ "${1:-}" = pull ] && exit 0
+[ "${1:-}" = exec ] && exit 0
 [ "${1:-}" = run ] || exit 1
 host_data=''; host_auth=''; host_server_data=''; entrypoint=''; host_label=''; host_key=''
 for ((i=1; i<=$#; i++)); do
@@ -121,7 +132,7 @@ case "$entrypoint" in
       umask 077
       ssh-keygen -y -f "$host_data/ssh/id_ed25519" > "$host_data/ssh/id_ed25519.pub"
     elif [ -n "$host_auth" ]; then
-      mkdir -p "$host_auth" "$host_server_data"
+      mkdir -p "$host_auth" "$host_server_data/certs"
       touch "$host_auth/authorized_keys"
       chmod 700 "$host_auth" "$host_server_data"
       chmod 600 "$host_auth/authorized_keys"
@@ -154,21 +165,108 @@ exec 7>&-
 
 PORTLOOM_HOME="$tmp/server-home" "$server" --domain loom.example.com >/dev/null
 admin_before=$(env_value "$tmp/server-home/.env" TM_ADMIN_TOKEN)
-tls_before=$(env_value "$tmp/server-home/.env" PORTLOOM_TLS_ASK_TOKEN)
 printf 'existing-agent-key\n' > "$tmp/server-home/ssh-auth/authorized_keys"
+: > "$FAKE_DOCKER_LOG"
 PORTLOOM_HOME="$tmp/server-home" "$server" --domain loom.example.com >/dev/null
+! grep -q '^pull ' "$FAKE_DOCKER_LOG" || fail 'idempotent rerun pulled a mutable image reference'
 admin_after=$(env_value "$tmp/server-home/.env" TM_ADMIN_TOKEN)
-tls_after=$(env_value "$tmp/server-home/.env" PORTLOOM_TLS_ASK_TOKEN)
 [ "$admin_before" = "$admin_after" ] || fail 'server rerun replaced administrator token'
-[ "$tls_before" = "$tls_after" ] || fail 'server rerun replaced TLS ask token'
+PORTLOOM_HOME="$tmp/server-home" "$server" --domain loom.example.com --version 0.3.1 >/dev/null
+[ "$(env_value "$tmp/server-home/.env" PORTLOOM_SERVER_IMAGE)" = 'ghcr.io/lkhmm520/portloom-server:0.3.1' ] || fail 'native-edge rerun did not upgrade the pinned Server image'
+[ "$(env_value "$tmp/server-home/.env" TM_ADMIN_TOKEN)" = "$admin_before" ] || fail 'native-edge version upgrade replaced administrator token'
+for file in .env compose.yml; do
+  [ -f "$tmp/server-home/native-upgrade-backup-0.3.1/$file" ] || fail "native upgrade did not back up $file"
+done
+native_upgrade_fail="$tmp/native-upgrade-failure"
+cp -a "$tmp/server-home" "$native_upgrade_fail"
+native_upgrade_output=''; native_upgrade_status=0
+native_upgrade_output=$(env PORTLOOM_HOME="$native_upgrade_fail" PORTLOOM_EDGE_VERIFY_ATTEMPTS=1 FAKE_FAIL_DOCKER_MATCH='exec portloom-server curl' "$server" --domain loom.example.com --version 0.3.2 2>&1) || native_upgrade_status=$?
+[ "$native_upgrade_status" -ne 0 ] || fail 'unhealthy native version upgrade unexpectedly succeeded'
+printf '%s' "$native_upgrade_output" | grep -Fq 'native HTTPS edge did not become ready; restoring the previous native-edge deployment' || fail "missing native upgrade rollback message: $native_upgrade_output"
+[ "$(env_value "$native_upgrade_fail/.env" PORTLOOM_SERVER_IMAGE)" = 'ghcr.io/lkhmm520/portloom-server:0.3.1' ] || fail 'failed native upgrade did not restore previous image configuration'
+[ ! -e "$native_upgrade_fail/native-upgrade-backup-0.3.2" ] || fail 'failed native upgrade left a retry-blocking backup directory'
 grep -q '^existing-agent-key$' "$tmp/server-home/ssh-auth/authorized_keys" || fail 'server rerun replaced authorized_keys'
 [ "$(stat -c %a "$tmp/server-home")" = 711 ] || fail 'server install root must be traverse-only for bind-mounted container UIDs'
-for dir in "$tmp/server-home/server-data" "$tmp/server-home/ssh-auth" "$tmp/server-home/caddy-data" "$tmp/server-home/caddy-config"; do
+for dir in "$tmp/server-home/server-data" "$tmp/server-home/server-data/certs" "$tmp/server-home/ssh-auth"; do
   [ "$(stat -c %a "$dir")" = 700 ] || fail "sensitive directory is not mode 0700: $dir"
 done
 [ "$(stat -c %a "$tmp/server-home/ssh-hostkeys")" = 755 ] || fail 'host-key directory must expose the public key to the unprivileged Server'
-grep -q 'on_demand_tls' "$tmp/server-home/Caddyfile"
-grep -q '127.0.0.1:8082/api/v1/tls/allow' "$tmp/server-home/Caddyfile"
+grep -q '^PORTLOOM_HTTP_PORT=80$' "$tmp/server-home/.env"
+grep -q '^PORTLOOM_HTTPS_PORT=443$' "$tmp/server-home/.env"
+! test -e "$tmp/server-home/Caddyfile" || fail 'native edge installer unexpectedly created a Caddyfile'
+
+legacy="$tmp/legacy-server"
+mkdir -p "$legacy/server-data" "$legacy/ssh-auth" "$legacy/ssh-hostkeys" "$legacy/caddy-data" "$legacy/caddy-config"
+cat > "$legacy/.env" <<EOF
+PORTLOOM_SERVER_IMAGE=ghcr.io/lkhmm520/portloom-server:0.2.0
+PORTLOOM_SSHD_IMAGE=ghcr.io/lkhmm520/portloom-sshd:0.2.0
+PORTLOOM_DOMAIN=loom.example.com
+PORTLOOM_WEB_PORT=8080
+PORTLOOM_SSH_PORT=2222
+PORTLOOM_GATEWAY_PORT=8081
+PORTLOOM_TLS_ASK_PORT=8082
+PORTLOOM_CADDY_HTTP_PORT=80
+PORTLOOM_CADDY_HTTPS_PORT=443
+TM_ADMIN_TOKEN=$admin_before
+PORTLOOM_TLS_ASK_TOKEN=$(printf 'b%.0s' {1..64})
+EOF
+printf 'services:\n  server: {}\n  caddy: {}\n' > "$legacy/compose.yml"
+printf 'legacy caddy configuration\n' > "$legacy/Caddyfile"
+legacy_fail="$tmp/legacy-server-failed-migration"
+legacy_pull_fail="$tmp/legacy-server-failed-pull"
+legacy_health_fail="$tmp/legacy-server-failed-health"
+legacy_init_fail="$tmp/legacy-server-failed-init"
+legacy_stop_fail="$tmp/legacy-server-failed-stop"
+legacy_mutable="$tmp/legacy-server-mutable-latest"
+cp -a "$legacy" "$legacy_mutable"
+python3 - "$legacy_mutable/.env" <<'PYENV'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text().replace('portloom-server:0.2.0', 'portloom-server:latest').replace('portloom-sshd:0.2.0', 'portloom-sshd:latest')
+p.write_text(s)
+PYENV
+cp -a "$legacy" "$legacy_fail"
+cp -a "$legacy" "$legacy_pull_fail"
+cp -a "$legacy" "$legacy_health_fail"
+cp -a "$legacy" "$legacy_init_fail"
+cp -a "$legacy" "$legacy_stop_fail"
+expect_reject 'legacy Caddy installation detected; rerun with --migrate-native-edge' env PORTLOOM_HOME="$legacy" "$server" --domain loom.example.com --version 0.3.0
+expect_reject 'legacy migration target must use a Server image reference different from the existing deployment' env PORTLOOM_HOME="$legacy_mutable" "$server" --domain loom.example.com --migrate-native-edge
+expect_reject 'injected docker failure' env PORTLOOM_HOME="$legacy_pull_fail" FAKE_FAIL_DOCKER_MATCH='pull ghcr.io/lkhmm520/portloom-server:0.3.0' "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge
+[ ! -e "$legacy_pull_fail/migration-backup-v0.3.0" ] || fail 'failed preflight left a migration backup directory'
+grep -q '^PORTLOOM_CADDY_HTTP_PORT=80$' "$legacy_pull_fail/.env" || fail 'failed preflight modified legacy .env'
+expect_reject 'injected docker failure' env PORTLOOM_HOME="$legacy_init_fail" FAKE_FAIL_DOCKER_MATCH='run --rm --user 0:0' "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge
+[ ! -e "$legacy_init_fail/migration-backup-v0.3.0" ] || fail 'failed init left a migration backup directory'
+grep -q '^PORTLOOM_CADDY_HTTP_PORT=80$' "$legacy_init_fail/.env" || fail 'failed init modified legacy .env'
+: > "$FAKE_DOCKER_LOG"
+expect_reject 'native-edge startup failed; restoring the legacy Caddy deployment' env PORTLOOM_HOME="$legacy_stop_fail" FAKE_FAIL_DOCKER_MATCH='stop caddy' "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge
+[ ! -e "$legacy_stop_fail/migration-backup-v0.3.0" ] || fail 'failed Caddy stop left a retry-blocking backup directory'
+grep -q '^PORTLOOM_CADDY_HTTP_PORT=80$' "$legacy_stop_fail/.env" || fail 'failed Caddy stop did not restore legacy .env'
+: > "$FAKE_DOCKER_LOG"
+expect_reject 'native-edge startup failed; restoring the legacy Caddy deployment' env PORTLOOM_HOME="$legacy_fail" FAKE_FAIL_DOCKER_MATCH='up -d --remove-orphans' "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge
+[ ! -e "$legacy_fail/migration-backup-v0.3.0" ] || fail 'failed migration left a retry-blocking backup directory'
+grep -q '^PORTLOOM_CADDY_HTTP_PORT=80$' "$legacy_fail/.env" || fail 'failed migration did not restore legacy .env'
+grep -q '^  caddy: {}$' "$legacy_fail/compose.yml" || fail 'failed migration did not restore legacy Compose'
+grep -q '^legacy caddy configuration$' "$legacy_fail/Caddyfile" || fail 'failed migration did not restore legacy Caddyfile'
+grep -q -- "compose --project-directory $legacy_fail --env-file .env -f compose.yml up -d" "$FAKE_DOCKER_LOG" || fail 'failed migration did not restart canonical legacy Compose from the install project directory'
+: > "$FAKE_DOCKER_LOG"
+health_output=''; health_status=0
+health_output=$(env PORTLOOM_HOME="$legacy_health_fail" PORTLOOM_EDGE_VERIFY_ATTEMPTS=1 FAKE_FAIL_DOCKER_MATCH='exec portloom-server curl' "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge 2>&1) || health_status=$?
+[ "$health_status" -ne 0 ] || fail 'unhealthy native edge migration unexpectedly succeeded'
+printf '%s' "$health_output" | grep -Fq 'native HTTPS edge did not become ready; restoring the legacy Caddy deployment' || fail "missing primary readiness failure: $health_output"
+printf '%s' "$health_output" | grep -Fq 'automatic legacy restoration could not be verified' || fail "missing recovery verification failure: $health_output"
+[ ! -e "$legacy_health_fail/migration-backup-v0.3.0" ] || fail 'failed health verification left a retry-blocking backup directory'
+grep -q '^PORTLOOM_CADDY_HTTP_PORT=80$' "$legacy_health_fail/.env" || fail 'failed health verification did not restore legacy .env'
+: > "$FAKE_DOCKER_LOG"
+PORTLOOM_HOME="$legacy" "$server" --domain loom.example.com --version 0.3.0 --migrate-native-edge >/dev/null
+for file in .env compose.yml Caddyfile; do
+  [ -f "$legacy/migration-backup-v0.3.0/$file" ] || fail "legacy migration did not back up $file"
+done
+grep -q '^PORTLOOM_HTTP_PORT=80$' "$legacy/.env" || fail 'legacy migration did not map Caddy HTTP port'
+grep -q '^PORTLOOM_HTTPS_PORT=443$' "$legacy/.env" || fail 'legacy migration did not map Caddy HTTPS port'
+grep -q -- "compose --project-directory $legacy --env-file migration-backup-v0.3.0/.env -f migration-backup-v0.3.0/compose.yml stop caddy" "$FAKE_DOCKER_LOG" || fail 'legacy migration did not stop Caddy from the install project directory'
+grep -q -- 'compose .*compose.yml up -d --remove-orphans' "$FAKE_DOCKER_LOG" || fail 'legacy migration did not remove the old Caddy orphan'
 
 mkdir -p "$tmp/existing-agent/data"
 printf '{"client_id":"old"}\n' > "$tmp/existing-agent/data/agent.json"

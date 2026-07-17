@@ -5,7 +5,7 @@ search: false
 # PortLoom MVP Work Plan
 
 ## Goal
-Build a two-host Docker deployment that manages OpenSSH reverse tunnels through a WebUI. The default public host includes managed sshd and Caddy; existing ingress is optional, and FRP is not used.
+Build a two-host Docker deployment that manages OpenSSH reverse tunnels through a WebUI. The default public host runs Server with its native HTTPS edge plus managed sshd; existing Caddy/Nginx/NPM ingress is optional legacy/advanced integration, and FRP is not used.
 
 ## Acceptance criteria
 - Server, Agent, managed sshd, and docs images build and start.

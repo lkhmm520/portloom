@@ -15,33 +15,31 @@
 
 ---
 
-PortLoom's default path needs two Linux hosts with Docker Compose: a public VPS running Server, managed sshd, and Caddy; and a NAS or internal host running Agent. Install Server, generate one Agent command in the WebUI, then add an HTTP route in the WebUI. The default path does not require Nginx Proxy Manager or changes to host OpenSSH.
+PortLoom's default path needs two Linux hosts with Docker Compose: a public VPS running Server and managed sshd, and a NAS or internal host running Agent. Server natively listens on public ports 80/443 and obtains certificates with autocert HTTP-01; the default path needs no Caddy, Nginx Proxy Manager, or host-OpenSSH changes. Install Server, generate one Agent command in the WebUI, then add an HTTP route.
 
 The built-in public ingress fully supports hostname-based **HTTP/HTTPS** publishing. TCP fields remain compatibility metadata only: they do not create a public TCP listener and are never shown as published/healthy in the WebUI.
 
 ## Architecture
 
 ```text
-                         Public Docker host
-Browser ──HTTPS──> Caddy ──Host──> PortLoom Gateway
-                    │                  │
-                    │ management host  ▼
-                    └──────────> Server + SQLite
-                                         │ authorization
-                                         ▼
-                                  managed sshd :2222
-                                         ▲
-                                         │ Agent initiates OpenSSH -R
-                                         │
-Internal HTTP service <── Agent <───────┘
-                         NAS / internal Docker host
+                               Public Docker host
+Browser ──HTTP/HTTPS──> PortLoom Server native edge :80/:443
+                               ├─ management host ──> WebUI/API + SQLite
+                               └─ route host ───────> PortLoom Gateway
+                                                          │
+                               authorization              │ loopback forwarding
+                                    ▼                     ▼
+                             managed sshd :2222 <── Agent initiates OpenSSH -R
+                                                          │
+Internal HTTP service <─────────────────────────────── Agent
+                                                NAS / internal Docker host
 ```
 
 | Capability | Description |
 | --- | --- |
 | **Two-host setup** | Install the Server stack publicly and only Agent internally |
 | **One Agent command** | The WebUI generates a shell-safe command with a one-time token, pinned host key, and matching version |
-| **Built-in HTTPS** | Caddy obtains certificates for the management host and enabled HTTP routes |
+| **Built-in HTTPS** | Server uses autocert HTTP-01, authorizes only the management host and enabled HTTP routes, and persists certificates in `/data/certs` |
 | **Managed SSH** | A separate sshd container permits public-key loopback remote forwarding only and leaves host sshd unchanged |
 | **Layered status** | Local service, SSH tunnel, and HTTP public-publishing state remain separate |
 | **Small control plane** | Go Server, Go Agent, SQLite, no external database or Docker socket |
@@ -63,7 +61,7 @@ chmod 0700 install-server.sh
 ./install-server.sh --domain portloom.example.com
 ```
 
-The installer starts `portloom-server`, `portloom-sshd`, and `portloom-caddy`, then prints the WebUI URL and a random administrator token.
+The installer starts only `portloom-server` and `portloom-sshd`. Server binds 80/443 directly with the minimal `NET_BIND_SERVICE` capability, then the installer prints the WebUI URL and a random administrator token.
 
 ### 2. Add an Agent in the WebUI
 
@@ -91,9 +89,9 @@ See the [five-minute quick start](https://docs.961121.xyz/en/guide/quick-start) 
 
 ## Optional advanced integrations
 
-The default installer includes Caddy and managed sshd. Only deployments with an existing ingress or special compliance/network requirements need to:
+The default installer includes Server's native HTTPS edge and managed sshd. Only deployments with an existing ingress or special compliance/network requirements need to:
 
-- connect an existing Caddy, Nginx, or Nginx Proxy Manager instance to PortLoom upstreams `8080/8081`;
+- connect an existing Caddy, Nginx, or Nginx Proxy Manager instance to PortLoom upstreams `8080/8081`; this is a legacy/advanced integration, and external Caddy may optionally use the `/api/v1/tls/allow` and `TM_TLS_ASK_*` compatibility interface;
 - omit managed sshd and use a hardened host OpenSSH service with a dedicated unprivileged account.
 
 Neither is a prerequisite for a new installation. See [Production deployment](https://docs.961121.xyz/en/install/production) and [Reverse proxy integration](https://docs.961121.xyz/en/install/reverse-proxy).

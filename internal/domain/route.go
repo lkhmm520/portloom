@@ -46,7 +46,29 @@ func NormalizeHost(value string) string {
 	return strings.TrimSuffix(value, ".")
 }
 
-func validHost(value string) bool {
+// NormalizeDNSHost normalizes a bare DNS hostname and rejects ports, empty
+// labels, overlong labels, and other syntax that ACME cannot use as a name.
+func NormalizeDNSHost(value string) (string, bool) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if strings.Contains(value, ":") {
+		return "", false
+	}
+	value = strings.TrimSuffix(value, ".")
+	if net.ParseIP(value) != nil {
+		return "", false
+	}
+	if len(value) > 253 || !hostnameRE.MatchString(value) {
+		return "", false
+	}
+	labels := strings.Split(value, ".")
+	if len(labels) < 2 || !strings.ContainsAny(labels[len(labels)-1], "abcdefghijklmnopqrstuvwxyz") {
+		return "", false
+	}
+	return value, true
+}
+
+// ValidHost reports whether value is an IP address or a syntactically valid DNS hostname.
+func ValidHost(value string) bool {
 	if net.ParseIP(value) != nil {
 		return true
 	}
@@ -65,7 +87,7 @@ func (r *Route) Validate() error {
 		return errors.New("protocol must be http or tcp")
 	}
 	if r.Protocol == ProtocolHTTP {
-		if !validHost(r.Domain) {
+		if !ValidHost(r.Domain) {
 			return errors.New("valid domain is required for HTTP route")
 		}
 		if r.PublicPort != 0 {
@@ -79,7 +101,7 @@ func (r *Route) Validate() error {
 			return errors.New("public port must be between 1 and 65535 when set for TCP route")
 		}
 	}
-	if !validHost(r.LocalHost) {
+	if !ValidHost(r.LocalHost) {
 		return errors.New("invalid local host")
 	}
 	if r.LocalPort < 1 || r.LocalPort > 65535 {

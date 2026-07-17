@@ -34,23 +34,20 @@ cleanup() {
   fi
   [ -z "$backend_pid" ] || kill "$backend_pid" >/dev/null 2>&1 || true
   [ ! -f "$agent_home/compose.yml" ] || PORTLOOM_AGENT_IMAGE="$agent_image" docker compose -p "portloom-installer-agent-$suffix" --env-file "$agent_home/.env" -f "$agent_home/compose.yml" down -v >/dev/null 2>&1 || true
-  [ ! -f "$server_home/compose.yml" ] || env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_TLS_ASK_PORT -u PORTLOOM_CADDY_HTTP_PORT -u PORTLOOM_CADDY_HTTPS_PORT -u TM_ADMIN_TOKEN -u PORTLOOM_TLS_ASK_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose -p "portloom-installer-server-$suffix" --env-file "$server_home/.env" -f "$server_home/compose.yml" down -v >/dev/null 2>&1 || true
-  docker rm -f portloom-agent portloom-server portloom-sshd portloom-caddy >/dev/null 2>&1 || true
+  [ ! -f "$server_home/compose.yml" ] || env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose -p "portloom-installer-server-$suffix" --env-file "$server_home/.env" -f "$server_home/compose.yml" down -v >/dev/null 2>&1 || true
+  docker rm -f portloom-agent portloom-server portloom-sshd >/dev/null 2>&1 || true
   docker run --rm -v "$host_tmp:/work" debian:bookworm-slim chown -R "$(id -u):$(id -g)" /work >/dev/null 2>&1 || true
   rm -rf "$visible_tmp" >/dev/null 2>&1 || true
   if [ "$created_alias" = true ]; then rm -f "$alias_root" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
-read -r web_port ssh_port gateway_port tls_ask_port backend_port caddy_http_port caddy_https_port < <(python3 -c 'import socket; s=[socket.socket() for _ in range(7)]; [x.bind(("127.0.0.1",0)) for x in s]; print(*(x.getsockname()[1] for x in s))')
+read -r web_port ssh_port gateway_port backend_port edge_http_port edge_https_port < <(python3 -c 'import socket; s=[socket.socket() for _ in range(6)]; [x.bind(("127.0.0.1",0)) for x in s]; print(*(x.getsockname()[1] for x in s))')
 domain=installer-flow.example.test
 PORTLOOM_SERVER_IMAGE_OVERRIDE="$server_image" PORTLOOM_SSHD_IMAGE_OVERRIDE="$sshd_image" \
-PORTLOOM_SKIP_PULL=true PORTLOOM_NO_START=true PORTLOOM_GATEWAY_PORT="$gateway_port" PORTLOOM_TLS_ASK_PORT="$tls_ask_port" \
-PORTLOOM_CADDY_HTTP_PORT="$caddy_http_port" PORTLOOM_CADDY_HTTPS_PORT="$caddy_https_port" PORTLOOM_CADDY_LOCAL_TLS=true \
+PORTLOOM_SKIP_PULL=true PORTLOOM_NO_START=true PORTLOOM_GATEWAY_PORT="$gateway_port" \
+PORTLOOM_HTTP_PORT="$edge_http_port" PORTLOOM_HTTPS_PORT="$edge_https_port" \
   "$repo/docs/public/install-server.sh" --domain "$domain" --home "$server_home" --web-port "$web_port" --ssh-port "$ssh_port" >/dev/null
-# The generated Caddy config must parse with its runtime token environment.
-tls_token=$(awk -F= '$1=="PORTLOOM_TLS_ASK_TOKEN" {print $2}' "$server_home/.env")
-docker run --rm -e PORTLOOM_TLS_ASK_TOKEN="$tls_token" -v "$server_home/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile >/dev/null
-(cd "$server_home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_TLS_ASK_PORT -u PORTLOOM_CADDY_HTTP_PORT -u PORTLOOM_CADDY_HTTPS_PORT -u TM_ADMIN_TOKEN -u PORTLOOM_TLS_ASK_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose -p "portloom-installer-server-$suffix" --env-file .env -f compose.yml up -d sshd server)
+(cd "$server_home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose -p "portloom-installer-server-$suffix" --env-file .env -f compose.yml up -d sshd server)
 base="http://127.0.0.1:$web_port"
 for _ in $(seq 1 100); do curl --noproxy '*' -fsS "$base/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 curl --noproxy '*' -fsS "$base/healthz" >/dev/null
@@ -97,14 +94,23 @@ curl --noproxy '*' -fsS -X POST -H "Authorization: Bearer $admin_token" -H 'Cont
 check_route() { curl --noproxy '*' -fsS -H 'Host: installer-route.test' "http://127.0.0.1:$gateway_port/backend.txt" 2>/dev/null | grep -q installer-generated-flow; }
 for _ in $(seq 1 120); do check_route && break; sleep 0.25; done
 check_route
-(cd "$server_home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_TLS_ASK_PORT -u PORTLOOM_CADDY_HTTP_PORT -u PORTLOOM_CADDY_HTTPS_PORT -u TM_ADMIN_TOKEN -u PORTLOOM_TLS_ASK_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose -p "portloom-installer-server-$suffix" --env-file .env -f compose.yml up -d caddy)
-check_control_tls() { curl --noproxy '*' -kfsS --resolve "$domain:$caddy_https_port:127.0.0.1" "https://$domain:$caddy_https_port/healthz" | grep -q '"status":"ok"'; }
-check_route_tls() { curl --noproxy '*' -kfsS --resolve "installer-route.test:$caddy_https_port:127.0.0.1" "https://installer-route.test:$caddy_https_port/backend.txt" | grep -q installer-generated-flow; }
-for _ in $(seq 1 120); do check_control_tls && check_route_tls && break; sleep 0.25; done
-check_control_tls
-check_route_tls
+CONTAINER=portloom-server python3 - <<'PY'
+import json, os, subprocess
+cfg = json.loads(subprocess.check_output(["docker", "inspect", os.environ["CONTAINER"]]))[0]["HostConfig"]
+caps = {cap.removeprefix("CAP_") for cap in cfg["CapAdd"]}
+assert caps == {"NET_BIND_SERVICE"}, cfg["CapAdd"]
+assert cfg["CapDrop"] == ["ALL"], cfg["CapDrop"]
+PY
+check_control_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "$domain:$edge_http_port:127.0.0.1" "http://$domain:$edge_http_port/healthz")" = 308 ]; }
+check_route_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "installer-route.test:$edge_http_port:127.0.0.1" "http://installer-route.test:$edge_http_port/backend.txt")" = 308 ]; }
+check_unknown_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "unknown-route.test:$edge_http_port:127.0.0.1" "http://unknown-route.test:$edge_http_port/")" = 404 ]; }
+check_control_edge
+check_route_edge
+check_unknown_edge
+curl --noproxy '*' -sS -D - -o /dev/null --resolve "$domain:$edge_http_port:127.0.0.1" "http://$domain:$edge_http_port/healthz" | tr -d '\r' | grep -Fqi "Location: https://$domain:$edge_https_port/healthz"
+curl --noproxy '*' -sS -D - -o /dev/null --resolve "installer-route.test:$edge_http_port:127.0.0.1" "http://installer-route.test:$edge_http_port/backend.txt" | tr -d '\r' | grep -Fqi "Location: https://installer-route.test:$edge_https_port/backend.txt"
 docker restart portloom-agent >/dev/null
-for _ in $(seq 1 160); do check_route && check_route_tls && break; sleep 0.25; done
+for _ in $(seq 1 160); do check_route && check_route_edge && break; sleep 0.25; done
 check_route
-check_route_tls
+check_route_edge
 echo 'installers_generated_compose_e2e=ok'

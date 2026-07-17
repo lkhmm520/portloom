@@ -2,7 +2,7 @@
 
 ## Server and Gateway
 
-One Server process exposes an administration listener (default `127.0.0.1:8080`) and an HTTP Host gateway (default `127.0.0.1:8081`). The Gateway resolves an enabled route and proxies to its allocated SSH loopback port.
+One Server process always exposes two internal listeners: an administration listener (default `127.0.0.1:8080`) and an HTTP Host Gateway (default `127.0.0.1:8081`). The easy install also enables Server’s native public edge on ports 80/443; it terminates HTTPS and dispatches the management hostname to control and enabled HTTP route hostnames to the Gateway. The Gateway proxies to each route’s allocated SSH loopback port.
 
 ## Agent and Client
 

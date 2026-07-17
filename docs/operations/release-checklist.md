@@ -7,7 +7,7 @@
 首次公开发布完成前：
 
 - `https://docs.961121.xyz/install-server.sh` 与 `install-agent.sh` 不能视为稳定可用的安装入口；
-- `ghcr.io/lkhmm520/portloom-sshd:<version>` 未发布前，默认三容器 Server 安装无法完成；
+- `ghcr.io/lkhmm520/portloom-sshd:<version>` 未发布前，默认双容器 Server 安装无法完成；
 - 不应仅因文档或命令已经合并，就宣称两主机安装可用。
 
 首次发布必须以同一安全版本 Tag 发布 Server、Agent、sshd 和 docs 镜像，部署文档站脚本，再执行下述发布后验收。

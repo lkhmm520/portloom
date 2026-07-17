@@ -57,6 +57,10 @@ services:
       TM_PUBLIC_HOST: ${TM_PUBLIC_HOST:-}
       TM_TLS_ASK_TOKEN: ${TM_TLS_ASK_TOKEN:-}
       TM_TLS_ASK_ADDR: ${TM_TLS_ASK_ADDR:-127.0.0.1:8082}
+      TM_EDGE_HTTP_ADDR: ${TM_EDGE_HTTP_ADDR:-}
+      TM_EDGE_HTTPS_ADDR: ${TM_EDGE_HTTPS_ADDR:-}
+      TM_TLS_CACHE_DIR: ${TM_TLS_CACHE_DIR:-/data/certs}
+      TM_ACME_EMAIL: ${TM_ACME_EMAIL:-}
     volumes:
       - ${TM_SERVER_DATA_DIR:-./data/server}:/data
       - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/ssh-auth

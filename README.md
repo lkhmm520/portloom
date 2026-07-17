@@ -15,33 +15,31 @@
 
 ---
 
-PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server、受管 sshd 与 Caddy，一台 NAS 或内网主机运行 Agent。安装 Server 后，在 WebUI 生成一条 Agent 命令，再在 WebUI 添加 HTTP 路由即可；默认路径不要求预先配置 Nginx Proxy Manager 或修改宿主 OpenSSH。
+PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server 与受管 sshd，一台 NAS 或内网主机运行 Agent。Server 原生监听公网 80/443，使用 autocert HTTP-01 获取证书；默认路径不要求预先配置 Caddy、Nginx Proxy Manager 或修改宿主 OpenSSH。安装 Server 后，在 WebUI 生成一条 Agent 命令，再添加 HTTP 路由即可。
 
 当前内置公网入口完整支持按域名发布 **HTTP/HTTPS** 服务。TCP 字段只作为兼容元数据保留，不会自动创建公网 TCP 监听，也不会在 WebUI 中显示为 published/healthy。
 
 ## 工作原理
 
 ```text
-                         公网 Docker 主机
-浏览器 ──HTTPS──> Caddy ──Host──> PortLoom Gateway
-                    │                  │
-                    │ 管理域名         ▼
-                    └──────────> Server + SQLite
-                                         │ 授权
-                                         ▼
-                                  managed sshd :2222
-                                         ▲
-                                         │ Agent 发起 OpenSSH -R
-                                         │
-内网 HTTP 服务 <──────── Agent <────────┘
-                         NAS / 内网 Docker 主机
+                              公网 Docker 主机
+浏览器 ──HTTP/HTTPS──> PortLoom Server 原生入口 :80/:443
+                              ├─ 管理域名 ──> WebUI/API + SQLite
+                              └─ 路由域名 ──> PortLoom Gateway
+                                                   │
+                              授权                 │ 回环转发
+                               ▼                   ▼
+                        managed sshd :2222 <── Agent 发起 OpenSSH -R
+                                                   │
+内网 HTTP 服务 <────────────────────────────── Agent
+                                            NAS / 内网 Docker 主机
 ```
 
 | 能力 | 说明 |
 | --- | --- |
 | **两主机安装** | 公网主机安装 Server 套件，内网主机只安装 Agent |
 | **一条 Agent 命令** | WebUI 生成带一次性令牌、固定主机公钥和匹配版本的 Shell 安装命令 |
-| **内置 HTTPS** | Caddy 为管理域名和已启用的 HTTP 路由按需申请证书 |
+| **内置 HTTPS** | Server 使用 autocert HTTP-01，只为管理域名和已启用的 HTTP 路由申请证书并持久化到 `/data/certs` |
 | **受管 SSH** | 独立 sshd 容器仅允许公钥认证和回环远程转发，不修改宿主 sshd |
 | **分层状态** | 本地服务、SSH 隧道和 HTTP 公网发布状态分别展示 |
 | **小型控制面** | Go Server、Go Agent、SQLite，无外部数据库或 Docker socket |
@@ -63,7 +61,7 @@ chmod 0700 install-server.sh
 ./install-server.sh --domain portloom.example.com
 ```
 
-安装器启动 `portloom-server`、`portloom-sshd` 和 `portloom-caddy`，最后输出 WebUI 地址与随机管理员令牌。
+安装器只启动 `portloom-server` 与 `portloom-sshd`。Server 通过最小化的 `NET_BIND_SERVICE` capability 直接绑定 80/443，最后输出 WebUI 地址与随机管理员令牌。
 
 ### 2. 在 WebUI 添加 Agent
 
@@ -91,9 +89,9 @@ chmod 0700 install-server.sh
 
 ## 进阶可选集成
 
-默认安装已包含 Caddy 与专用 sshd。只有在公网主机已有入口或有特殊合规/网络要求时，才需要：
+默认安装已包含 Server 原生 HTTPS 入口与专用 sshd。只有在公网主机已有入口或有特殊合规/网络要求时，才需要：
 
-- 把现有 Caddy、Nginx 或 Nginx Proxy Manager 接到 PortLoom 的 `8080/8081` 上游；
+- 把现有 Caddy、Nginx 或 Nginx Proxy Manager 接到 PortLoom 的 `8080/8081` 上游；这是遗留/高级集成，外部 Caddy 可选用 `/api/v1/tls/allow` 与 `TM_TLS_ASK_*` 兼容接口；
 - 省略受管 sshd，改用经过加固的宿主 OpenSSH 与专用非管理员账户。
 
 这些不是新安装的前置条件。参见[生产环境部署](https://docs.961121.xyz/install/production)和[反向代理接入](https://docs.961121.xyz/install/reverse-proxy)。

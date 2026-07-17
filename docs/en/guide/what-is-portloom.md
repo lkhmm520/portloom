@@ -2,43 +2,24 @@
 
 PortLoom is a self-hosted tunnel proxy. It publishes web services from a home NAS or private network through a Docker host with a public address.
 
-## The two hosts
-
 | Location | Install | Responsibility |
 | --- | --- | --- |
-| Public VPS or cloud host | PortLoom Server | WebUI, management API, HTTPS ingress, and tunnel entry |
+| Public VPS or cloud host | PortLoom Server + managed sshd | WebUI, management API, native HTTPS edge, and tunnel entry |
 | NAS or internal server | PortLoom Agent | Connects outbound to Server and forwards traffic to local services |
 
-The Agent only needs outbound HTTPS and SSH access to Server. You do not open an inbound port on the NAS router.
-
-## Request path
+The Agent needs only outbound HTTPS and SSH access to Server. You do not open an inbound port on the NAS router.
 
 ```text
-Browser
-  │ HTTPS
-  ▼
-Public Docker host
-  Caddy → PortLoom Gateway
-              │
-              │ established encrypted reverse tunnel
-              ▼
-Internal Docker host
-  PortLoom Agent → Jellyfin / blog / admin page
+Browser ──HTTPS──> PortLoom Server native edge/Gateway
+                              │ established encrypted reverse tunnel
+                              ▼
+                    PortLoom Agent → internal service
 ```
 
-The Agent initiates the tunnel to Server. Requests travel back through that established tunnel to the internal service.
+The easy install needs no Caddy: Server binds 80/443, manages certificates with autocert HTTP-01, and authorizes only the management hostname and enabled HTTP route hostnames.
 
-## Daily use
+After installation, add an Agent in the WebUI, run its generated command, and create HTTP routes with a local address, port, and public hostname.
 
-After installation, routine work happens in the WebUI:
+This release fully manages hostname-based HTTP/HTTPS routes. TCP fields are compatibility metadata only; the built-in edge and WebUI create no public TCP listeners. Server uses one SQLite database and is not an active-active cluster.
 
-1. Add an Agent and copy its generated install command.
-2. Paste the command on the NAS.
-3. Add a route with its local address, port, and public hostname.
-4. Check local reachability and tunnel health.
-
-## Current scope
-
-This release fully manages hostname-based HTTP/HTTPS routes. TCP fields are compatibility metadata only: the built-in ingress and WebUI do not create public TCP listeners or report those records as published or healthy. Server uses one SQLite database and is not an active-active cluster.
-
-Existing Caddy, Nginx, or Nginx Proxy Manager installations can remain in place. See [Reverse proxy integration](/en/install/reverse-proxy). They are optional integrations, not prerequisites.
+Existing Caddy, Nginx, or Nginx Proxy Manager can remain as an advanced compatibility ingress using 8080/8081. See [Reverse proxy integration](/en/install/reverse-proxy).

@@ -3,11 +3,21 @@
 
   const API = "/api/v1";
   const TOKEN_KEY = "portloom.admin-token";
-  const state = { token: sessionStorage.getItem(TOKEN_KEY) || "", system: {}, clients: [], tokens: [], routes: [], view: "dashboard", deleteID: "" };
+  const LANGUAGE_KEY = "portloom.language";
+  const i18n = window.PortLoomI18n;
+  if (!i18n) throw new Error("PortLoom translations failed to load");
+  let savedLocale = "";
+  try { savedLocale = localStorage.getItem(LANGUAGE_KEY) || ""; } catch (_) { /* storage may be unavailable */ }
+  const state = {
+    token: sessionStorage.getItem(TOKEN_KEY) || "", system: {}, clients: [], tokens: [], routes: [],
+    view: "dashboard", deleteID: "", locale: i18n.normalizeLocale(savedLocale), loaded: false,
+    loading: false, apiOnline: null, updatedAt: null
+  };
   let authAttempt = 0;
   let loginController = null;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const t = (key, replacements = {}, fallback = key) => i18n.translate(state.locale, key, replacements, fallback);
 
   class APIError extends Error {
     constructor(message, status) { super(message); this.status = status; }
@@ -22,10 +32,10 @@
     if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     let response;
     try { response = await fetch(`${API}${path}`, { ...options, headers }); }
-    catch (_) { throw new APIError("Cannot reach the PortLoom API.", 0); }
+    catch (_) { throw new APIError(t("error.apiUnreachable"), 0); }
     if (response.status === 401 || response.status === 403) {
       if (requestToken && state.token === requestToken && authAttempt === requestAuthAttempt) logout();
-      throw new APIError("The administrator token was rejected.", response.status);
+      throw new APIError(t("error.adminRejected"), response.status);
     }
     const text = await response.text();
     let payload = null;
@@ -70,12 +80,14 @@
   }
   function badge(value, fallback) {
     const status = normalizedStatus(value, fallback);
-    return el("span", `badge ${tone(status)}`, status.replaceAll("_", " "));
+    const readable = status.replaceAll("_", " ");
+    return el("span", `badge ${tone(status)}`, t(`status.${readable}`, {}, readable));
   }
   function statusLayer(label, value) {
     const status = normalizedStatus(value);
     const row = el("div", `status-layer ${tone(status)}`);
-    row.append(el("b", "", label), el("i"), el("span", "", status.replaceAll("_", " ")));
+    const readable = status.replaceAll("_", " ");
+    row.append(el("b", "", t(`status.${label.toLowerCase()}`, {}, label)), el("i"), el("span", "", t(`status.${readable}`, {}, readable)));
     return row;
   }
   function routePublicStatus(route) {
@@ -104,16 +116,16 @@
   function formatDate(value) {
     if (!value) return "—";
     const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? String(value) : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+    return Number.isNaN(date.valueOf()) ? String(value) : new Intl.DateTimeFormat(state.locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
   }
   function relativeDate(value) {
-    if (!value) return "Never";
+    if (!value) return t("common.never");
     const time = new Date(value).valueOf();
     if (Number.isNaN(time)) return String(value);
     const delta = Math.round((time - Date.now()) / 1000);
     const abs = Math.abs(delta);
     const [unit, divisor] = abs < 60 ? ["second", 1] : abs < 3600 ? ["minute", 60] : abs < 86400 ? ["hour", 3600] : ["day", 86400];
-    return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(delta / divisor), unit);
+    return new Intl.RelativeTimeFormat(state.locale, { numeric: "auto" }).format(Math.round(delta / divisor), unit);
   }
   function clientOnline(client) {
     const explicit = normalizedStatus(client.status || client.connection_status, "");
@@ -121,7 +133,54 @@
     if (!client.last_seen_at && !client.last_seen) return false;
     return Date.now() - new Date(client.last_seen_at || client.last_seen).valueOf() < 90_000;
   }
-  function clientName(client) { return client.name || client.hostname || client.id || "Unnamed client"; }
+  function clientName(client) { return client.name || client.hostname || client.id || t("common.unnamedClient"); }
+
+  function updateLastUpdated() {
+    const target = $("#last-updated");
+    target.textContent = state.updatedAt
+      ? t("updated.at", { time: new Intl.DateTimeFormat(state.locale, { timeStyle: "medium" }).format(state.updatedAt) })
+      : t("updated.never");
+  }
+
+  function updateContextAction() {
+    const actions = {
+      tokens: { label: "context.generateAgent", action: "token" },
+      routes: { label: "context.addRoute", action: "route" }
+    };
+    const config = actions[state.view];
+    const button = $("#context-action-button");
+    button.hidden = !config;
+    button.dataset.action = config?.action || "";
+    button.textContent = config ? t(config.label) : "";
+  }
+
+  function applyLocale() {
+    document.documentElement.lang = state.locale;
+    $$('[data-i18n]').forEach(node => { node.textContent = t(node.dataset.i18n); });
+    for (const [attribute, selector] of [["placeholder", "[data-i18n-placeholder]"], ["aria-label", "[data-i18n-aria-label]"], ["title", "[data-i18n-title]"], ["content", "[data-i18n-content]"]]) {
+      $$(selector).forEach(node => node.setAttribute(attribute, t(node.dataset[`i18n${attribute.split("-").map(part => part[0].toUpperCase() + part.slice(1)).join("")}`])));
+    }
+    $$('[data-language-toggle]').forEach(button => {
+      const chinese = state.locale === "zh-CN";
+      button.textContent = t(chinese ? "language.english" : "language.chinese");
+      button.setAttribute("aria-label", t(chinese ? "language.switchEnglish" : "language.switchChinese"));
+    });
+    const tokenVisible = $("#admin-token").type === "text";
+    $("#toggle-token").textContent = t(tokenVisible ? "common.hide" : "common.show");
+    $("#toggle-token").setAttribute("aria-label", t(tokenVisible ? "common.hide" : "common.show"));
+    $("#page-title").textContent = t(`page.${state.view}`);
+    updateContextAction();
+    updateLastUpdated();
+    if (state.apiOnline !== null) setAPIState(state.apiOnline);
+    setLoading(state.loading);
+    if (state.loaded) renderAll();
+  }
+
+  function toggleLocale() {
+    state.locale = state.locale === "zh-CN" ? "en" : "zh-CN";
+    try { localStorage.setItem(LANGUAGE_KEY, state.locale); } catch (_) { /* storage may be unavailable */ }
+    applyLocale();
+  }
 
   function showNotice(message, kind = "error") {
     const notice = $("#notice");
@@ -132,14 +191,16 @@
     showNotice.timer = setTimeout(() => { notice.hidden = true; }, 6000);
   }
   function setAPIState(online) {
+    state.apiOnline = online;
     const indicator = $("#api-indicator");
     indicator.className = `connection ${online ? "online" : "offline"}`;
-    indicator.lastChild.textContent = online ? " API connected" : " API unavailable";
+    indicator.lastChild.textContent = ` ${t(online ? "api.connected" : "api.unavailable")}`;
   }
   function setLoading(loading) {
+    state.loading = loading;
     const button = $("#refresh-button");
     button.disabled = loading;
-    button.textContent = loading ? "Refreshing…" : "Refresh";
+    button.textContent = t(loading ? "common.refreshing" : "common.refresh");
   }
 
   async function loadAll({ quiet = false, signal } = {}) {
@@ -148,14 +209,16 @@
       const [systemPayload, clientsPayload, tokensPayload, routesPayload] = await Promise.all([
         request("/system", { signal }), request("/clients", { signal }), request("/enrollment-tokens", { signal }), request("/routes", { signal })
       ]);
-      if (signal?.aborted) throw new APIError("Request cancelled.", 0);
+      if (signal?.aborted) throw new APIError(t("error.cancelled"), 0);
       state.system = systemPayload || {};
       state.clients = asList(clientsPayload, "clients");
       state.tokens = asList(tokensPayload, "tokens");
       state.routes = asList(routesPayload, "routes");
+      state.loaded = true;
       renderAll();
       setAPIState(true);
-      $("#last-updated").textContent = `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(new Date())}`;
+      state.updatedAt = new Date();
+      updateLastUpdated();
     } catch (error) {
       if (!signal?.aborted) {
         setAPIState(false);
@@ -177,18 +240,18 @@
     const healthy = state.routes.filter(routeHealthy).length;
     const drift = state.routes.filter(route => Number(route.observed_revision || 0) < Number(route.desired_revision || 0)).length;
     $("#metric-clients").textContent = String(online);
-    $("#metric-clients-detail").textContent = `${state.clients.length} enrolled total`;
+    $("#metric-clients-detail").textContent = t("metrics.clientsTotal", { count: state.clients.length });
     $("#metric-routes").textContent = String(enabled);
-    $("#metric-routes-detail").textContent = `${state.routes.length} configured total`;
+    $("#metric-routes-detail").textContent = t("metrics.routesTotal", { count: state.routes.length });
     $("#metric-tunnels").textContent = String(healthy);
-    $("#metric-tunnels-detail").textContent = enabled ? `${Math.round(healthy / enabled * 100)}% of enabled routes` : "No enabled routes";
+    $("#metric-tunnels-detail").textContent = enabled ? t("metrics.healthyPercent", { percent: Math.round(healthy / enabled * 100) }) : t("metrics.noEnabledRoutes");
     $("#metric-drift").textContent = String(drift);
-    $("#metric-drift-detail").textContent = drift ? "Awaiting agent convergence" : "Desired and observed match";
+    $("#metric-drift-detail").textContent = t(drift ? "metrics.awaitingConvergence" : "metrics.revisionsMatch");
 
     const container = $("#dashboard-routes");
     container.replaceChildren();
     const routes = [...state.routes].sort((a, b) => Number(routeHealthy(a)) - Number(routeHealthy(b))).slice(0, 6);
-    if (!routes.length) { container.className = "route-health-list empty-state"; container.textContent = "No routes configured."; return; }
+    if (!routes.length) { container.className = "route-health-list empty-state"; container.textContent = t("dashboard.noRoutes"); return; }
     container.className = "route-health-list";
     routes.forEach(route => {
       const item = el("div", "route-health-item");
@@ -201,12 +264,12 @@
   function renderClients() {
     const body = $("#clients-body"); body.replaceChildren();
     $("#clients-empty").hidden = state.clients.length > 0;
-    $("#client-count").textContent = `${state.clients.length} client${state.clients.length === 1 ? "" : "s"}`;
+    $("#client-count").textContent = t("clients.count", { count: state.clients.length });
     state.clients.forEach(client => {
       const row = el("tr");
       addCell(row, clientName(client), client.id);
       const statusCell = el("td"); statusCell.append(badge(clientOnline(client) ? "online" : "offline")); row.append(statusCell);
-      addCell(row, `${client.observed_revision || 0} / ${client.desired_revision || client.revision || 0}`, "observed / desired");
+      addCell(row, `${client.observed_revision || 0} / ${client.desired_revision || client.revision || 0}`, t("table.observedDesired"));
       addCell(row, client.version || "—", client.platform || client.os || "");
       addCell(row, relativeDate(client.last_seen_at || client.last_seen), formatDate(client.last_seen_at || client.last_seen));
       body.append(row);
@@ -225,10 +288,10 @@
     $("#tokens-empty").hidden = state.tokens.length > 0;
     state.tokens.forEach(token => {
       const row = el("tr");
-      addCell(row, token.id || "Enrollment token");
+      addCell(row, token.id || t("tokens.defaultID"));
       const statusCell = el("td"); statusCell.append(badge(tokenStatus(token))); row.append(statusCell);
       addCell(row, formatDate(token.created_at));
-      addCell(row, formatDate(token.expires_at), token.expires_at ? relativeDate(token.expires_at) : "No expiry");
+      addCell(row, formatDate(token.expires_at), token.expires_at ? relativeDate(token.expires_at) : t("common.noExpiry"));
       addCell(row, token.used_by || token.client_name || token.client_id || "—", token.used_at ? formatDate(token.used_at) : "");
       body.append(row);
     });
@@ -239,25 +302,25 @@
     $("#routes-empty").hidden = state.routes.length > 0;
     state.routes.forEach(route => {
       const row = el("tr");
-      addCell(row, route.name || "Unnamed route", `${route.protocol || "http"} · ${route.enabled ? "enabled" : "disabled"}`);
+      addCell(row, route.name || t("common.unnamedRoute"), `${route.protocol || "http"} · ${t(route.enabled ? "routes.enabled" : "routes.disabled")}`);
       addCell(row, `${route.local_host}:${route.local_port}`, state.clients.find(c => c.id === route.client_id)?.name || route.client_id);
       const exposure = route.protocol === "tcp" ? `TCP :${route.public_port || "auto"}` : route.domain || "—";
-      addCell(row, exposure, route.remote_port ? `loopback :${route.remote_port}` : "port pending");
+      addCell(row, exposure, route.remote_port ? t("routes.loopbackPort", { port: route.remote_port }) : t("routes.portPending"));
       const statusCell = el("td"); statusCell.append(routeStatus(route)); row.append(statusCell);
-      addCell(row, `${route.observed_revision || 0} / ${route.desired_revision || 0}`, "observed / desired");
+      addCell(row, `${route.observed_revision || 0} / ${route.desired_revision || 0}`, t("table.observedDesired"));
       const actions = el("td", "align-right"); const group = el("div", "action-group");
-      const edit = el("button", "action-button", "Edit"); edit.type = "button"; edit.dataset.editRoute = route.id;
+      const edit = el("button", "action-button", t("routes.edit")); edit.type = "button"; edit.dataset.editRoute = route.id;
       if (String(route.protocol || "http").toLowerCase() !== "http") {
-        edit.disabled = true; edit.title = "TCP metadata is read-only because the built-in public ingress supports HTTP/HTTPS only.";
+        edit.disabled = true; edit.title = t("routes.tcpReadOnly");
       }
-      const remove = el("button", "action-button delete", "Delete"); remove.type = "button"; remove.dataset.deleteRoute = route.id;
+      const remove = el("button", "action-button delete", t("routes.delete")); remove.type = "button"; remove.dataset.deleteRoute = route.id;
       group.append(edit, remove); actions.append(group); row.append(actions); body.append(row);
     });
   }
 
   function populateClientSelect() {
     const select = $("#route-client"); const selected = select.value; select.replaceChildren();
-    if (!state.clients.length) { const option = el("option", "", "No enrolled clients"); option.value = ""; select.append(option); return; }
+    if (!state.clients.length) { const option = el("option", "", t("clients.noneSelect")); option.value = ""; select.append(option); return; }
     state.clients.forEach(client => { const option = el("option", "", clientName(client)); option.value = client.id; select.append(option); });
     if (state.clients.some(client => client.id === selected)) select.value = selected;
   }
@@ -266,21 +329,23 @@
     state.view = view;
     $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view));
     $$(".view").forEach(section => section.classList.toggle("active", section.id === `view-${view}`));
-    $("#page-title").textContent = ({ dashboard: "Dashboard", clients: "Clients", tokens: "Add Agent", routes: "Routes" })[view];
+    $("#page-title").textContent = t(`page.${view}`);
+    updateContextAction();
   }
 
   function clearSensitiveUI() {
     const adminToken = $("#admin-token");
     adminToken.value = "";
     adminToken.type = "password";
-    $("#toggle-token").textContent = "Show";
+    $("#toggle-token").textContent = t("common.show");
+    $("#toggle-token").setAttribute("aria-label", t("common.show"));
     $("#created-token").textContent = "";
-    $("#copy-token-button").textContent = "Copy command";
+    $("#copy-token-button").textContent = t("common.copyCommand");
   }
 
   function clearCreatedToken() {
     $("#created-token").textContent = "";
-    $("#copy-token-button").textContent = "Copy command";
+    $("#copy-token-button").textContent = t("common.copyCommand");
   }
 
   function bindSecretDialogCleanup() {
@@ -294,9 +359,9 @@
     if (!secret) return;
     try {
       await navigator.clipboard.writeText(secret);
-      if (dialog.open && tokenNode.textContent === secret) $("#copy-token-button").textContent = "Copied";
+      if (dialog.open && tokenNode.textContent === secret) $("#copy-token-button").textContent = t("common.copied");
     } catch (_) {
-      showNotice("Clipboard access was denied. Select and copy the token manually.");
+      showNotice(t("error.clipboardDenied"));
     }
   }
 
@@ -332,7 +397,7 @@
 
   function openRouteDialog(route) {
     const form = $("#route-form"); form.reset(); $("#route-form-error").hidden = true;
-    $("#route-dialog-title").textContent = route ? "Edit route" : "Add route";
+    $("#route-dialog-title").textContent = t(route ? "dialog.editRoute" : "dialog.addRoute");
     $("#route-id").value = route?.id || "";
     if (route) {
       ["name", "client_id", "domain", "local_host", "local_port", "tunnel_group"].forEach(key => {
@@ -358,7 +423,7 @@
     const submit = form.querySelector("button[type=submit]"); submit.disabled = true;
     try {
       await request(id ? `/routes/${encodeURIComponent(id)}` : "/routes", { method: id ? "PUT" : "POST", body: JSON.stringify(routePayload(form)) });
-      $("#route-dialog").close(); await loadAll(); showNotice(id ? "Route updated." : "Route created.", "success");
+      $("#route-dialog").close(); await loadAll(); showNotice(t(id ? "routes.updated" : "routes.created"), "success");
     } catch (reason) { error.textContent = reason.message; error.hidden = false; }
     finally { submit.disabled = false; }
   }
@@ -385,41 +450,51 @@
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const error = $("#token-form-error"); error.hidden = true;
     const submit = form.querySelector("button[type=submit]"); submit.disabled = true;
     try {
-      if (!state.system?.managed_ssh || !state.system?.ssh_host_key) throw new APIError("Managed SSH is not enabled on this Server. Use the advanced installation guide.", 409);
+      if (!state.system?.managed_ssh || !state.system?.ssh_host_key) throw new APIError(t("agent.managedSSHDisabled"), 409);
       const result = await request("/enrollment-tokens", { method: "POST", body: JSON.stringify({ expires_in: String(data.get("expires_in")) }) });
       const secret = result?.token || result?.secret || result?.value;
-      if (!secret) throw new APIError("The server created a token but did not return its one-time secret.", 500);
+      if (!secret) throw new APIError(t("agent.noSecret"), 500);
       const command = buildAgentInstallCommand({
         serverURL: String(data.get("server_url")).trim(), name: String(data.get("name")).trim(), token: secret,
         sshHost: String(data.get("ssh_host")).trim(), sshPort: Number(data.get("ssh_port")), sshHostKey: state.system.ssh_host_key,
         version: state.system.version
       });
-      $("#token-dialog").close(); $("#created-token").textContent = command; $("#copy-token-button").textContent = "Copy command"; $("#secret-dialog").showModal(); await loadAll();
+      $("#token-dialog").close(); $("#created-token").textContent = command; $("#copy-token-button").textContent = t("common.copyCommand"); $("#secret-dialog").showModal(); await loadAll();
     } catch (reason) { error.textContent = reason.message; error.hidden = false; }
     finally { submit.disabled = false; }
   }
   async function confirmDelete(route) {
-    state.deleteID = route.id; $("#confirm-message").textContent = `Delete “${route.name}”? This cannot be undone.`;
+    state.deleteID = route.id; $("#confirm-message").textContent = t("routes.deleteQuestion", { name: route.name });
     const dialog = $("#confirm-dialog"); dialog.showModal(); const result = await new Promise(resolve => dialog.addEventListener("close", () => resolve(dialog.returnValue), { once: true }));
     if (result !== "confirm") return;
-    try { await request(`/routes/${encodeURIComponent(route.id)}`, { method: "DELETE" }); await loadAll(); showNotice("Route deleted.", "success"); }
+    try { await request(`/routes/${encodeURIComponent(route.id)}`, { method: "DELETE" }); await loadAll(); showNotice(t("routes.deleted"), "success"); }
     catch (error) { showNotice(error.message); }
+  }
+
+  function openTokenDialog() {
+    const form = $("#token-form"); form.reset(); $("#token-form-error").hidden = true;
+    form.elements.server_url.value = location.origin.startsWith("https://") ? location.origin : "";
+    form.elements.ssh_host.value = ["localhost", "127.0.0.1", "::1"].includes(location.hostname) ? "" : location.hostname;
+    form.elements.ssh_port.value = state.system?.ssh_port || 2222;
+    $("#token-dialog").showModal();
   }
 
   function bindEvents() {
     $("#login-form").addEventListener("submit", event => { event.preventDefault(); login(new FormData(event.currentTarget).get("token")); });
-    $("#toggle-token").addEventListener("click", () => { const input = $("#admin-token"); const visible = input.type === "text"; input.type = visible ? "password" : "text"; $("#toggle-token").textContent = visible ? "Show" : "Hide"; });
+    $("#toggle-token").addEventListener("click", () => {
+      const input = $("#admin-token"); const visible = input.type === "text"; input.type = visible ? "password" : "text";
+      $("#toggle-token").textContent = t(visible ? "common.show" : "common.hide");
+      $("#toggle-token").setAttribute("aria-label", t(visible ? "common.show" : "common.hide"));
+    });
+    $$('[data-language-toggle]').forEach(button => button.addEventListener("click", toggleLocale));
     $("#logout-button").addEventListener("click", () => logout());
     $("#refresh-button").addEventListener("click", () => loadAll().catch(() => {}));
+    $("#context-action-button").addEventListener("click", event => {
+      if (event.currentTarget.dataset.action === "token") openTokenDialog();
+      if (event.currentTarget.dataset.action === "route") openRouteDialog();
+    });
     $$(".nav-item").forEach(item => item.addEventListener("click", () => switchView(item.dataset.view)));
     $$('[data-goto]').forEach(item => item.addEventListener("click", () => switchView(item.dataset.goto)));
-    $("#new-route-button").addEventListener("click", () => openRouteDialog());
-    $("#new-token-button").addEventListener("click", () => {
-      const form = $("#token-form"); form.reset(); $("#token-form-error").hidden = true;
-      form.elements.server_url.value = location.origin.startsWith("https://") ? location.origin : "";
-      form.elements.ssh_host.value = ["localhost", "127.0.0.1", "::1"].includes(location.hostname) ? "" : location.hostname;
-      form.elements.ssh_port.value = state.system?.ssh_port || 2222; $("#token-dialog").showModal();
-    });
     $("#route-form").addEventListener("submit", saveRoute);
     $("#token-form").addEventListener("submit", createToken);
     $("#routes-body").addEventListener("click", event => {
@@ -432,6 +507,7 @@
     $("#copy-token-button").addEventListener("click", copyCreatedToken);
   }
 
+  applyLocale();
   bindEvents();
   if (state.token) login(state.token); else { $("#login-screen").hidden = false; $("#app").hidden = true; }
 })();

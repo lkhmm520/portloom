@@ -81,11 +81,13 @@ test("route creation exposes HTTP only and explains the built-in ingress boundar
 });
 
 test("enrollment token list identifies rows by safe token ID", () => {
-  assert.match(html, /<th>ID<\/th><th>Status<\/th>/);
+  assert.match(html, /<th[^>]*>ID<\/th><th[^>]*>Status<\/th>/);
   const renderTokens = app.match(/function renderTokens\(\)[\s\S]*?\n  }/)?.[0] || "";
   assert.ok(renderTokens, "renderTokens function exists");
   assert.doesNotMatch(renderTokens, /token\.name/);
   assert.match(renderTokens, /token\.id/);
+  assert.doesNotMatch(renderTokens, /"Enrollment token"/);
+  assert.match(renderTokens, /tokens\.defaultID/);
 });
 
 test("route edit locks client ownership and keeps a neutral success message", () => {
@@ -95,7 +97,7 @@ test("route edit locks client ownership and keeps a neutral success message", ()
 
   const payload = app.match(/function routePayload\(form\)[\s\S]*?\n  }/)?.[0] || "";
   assert.match(payload, /client_id:\s*String\(form\.elements\.client_id\.value\)/);
-  assert.match(app, /id \? "Route updated\." : "Route created\."/);
+  assert.match(app, /showNotice\(t\(id \? "routes\.updated" : "routes\.created"\)/);
   assert.doesNotMatch(app, /client (?:changed|updated|reassigned)/i);
 });
 
@@ -133,8 +135,8 @@ test("401 and 403 responses perform a visible logout", async () => {
 
   for (const status of [401, 403]) {
     const calls = [];
-    const request = Function("API", "state", "authAttempt", "Headers", "fetch", "logout", "APIError", `"use strict"; ${requestSource}; return request;`)(
-      "/api/v1", { token: "secret" }, 0, Headers, async () => ({ status }), (...args) => calls.push(args), class APIError extends Error { constructor(message, code) { super(message); this.status = code; } }
+    const request = Function("API", "state", "authAttempt", "Headers", "fetch", "logout", "t", "APIError", `"use strict"; ${requestSource}; return request;`)(
+      "/api/v1", { token: "secret" }, 0, Headers, async () => ({ status }), (...args) => calls.push(args), key => key, class APIError extends Error { constructor(message, code) { super(message); this.status = code; } }
     );
     await assert.rejects(request("/routes"), error => error.status === status);
     assert.deepEqual(calls, [[]], `logout called with default visible-login behavior for ${status}`);
@@ -146,19 +148,20 @@ test("401 and 403 responses perform a visible logout", async () => {
     "#app": { hidden: false },
     "#login-screen": { hidden: true },
     "#admin-token": { value: "admin-secret", type: "text", focus() { this.focused = true; events.push("focus"); } },
-    "#toggle-token": { textContent: "Hide" },
+    "#toggle-token": { textContent: "Hide", setAttribute(name, value) { this[name] = value; } },
     "#created-token": { textContent: "one-time-enrollment-secret" },
     "#copy-token-button": { textContent: "Copied" }
   };
   const state = { token: "secret" };
   let removed = "";
-  const logout = Function("state", "sessionStorage", "TOKEN_KEY", "$", "$$", "requestAnimationFrame", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; return logout;`)(
+  const logout = Function("state", "sessionStorage", "TOKEN_KEY", "$", "$$", "requestAnimationFrame", "t", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; return logout;`)(
     state,
     { removeItem(key) { removed = key; } },
     "token-key",
     selector => nodes[selector],
     selector => selector === "dialog[open]" ? dialogs : [],
-    callback => callback()
+    callback => callback(),
+    key => ({ "common.show": "Show", "common.copyCommand": "Copy command" })[key] || key
   );
   logout();
   assert.equal(state.token, "");
@@ -185,10 +188,11 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
 
   const makeNodes = () => ({
     "#app": { hidden: true }, "#login-screen": { hidden: false }, "#login-error": { hidden: false, textContent: "old" },
-    "#admin-token": { value: "admin-secret", type: "text", focus() {} }, "#toggle-token": { textContent: "Hide" },
+    "#admin-token": { value: "admin-secret", type: "text", focus() {} }, "#toggle-token": { textContent: "Hide", setAttribute(name, value) { this[name] = value; } },
     "#created-token": { textContent: "one-time-secret" }, "#copy-token-button": { textContent: "Copied" }
   });
-  const buildLogin = (state, sessionStorage, loadAll, nodes) => Function("state", "sessionStorage", "TOKEN_KEY", "loadAll", "$", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${loginSource}; return login;`)(state, sessionStorage, "token-key", loadAll, selector => nodes[selector]);
+  const translate = key => ({ "common.show": "Show", "common.copyCommand": "Copy command", "common.copied": "Copied" })[key] || key;
+  const buildLogin = (state, sessionStorage, loadAll, nodes) => Function("state", "sessionStorage", "TOKEN_KEY", "loadAll", "$", "t", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${loginSource}; return login;`)(state, sessionStorage, "token-key", loadAll, selector => nodes[selector], translate);
 
   {
     const nodes = makeNodes(); const state = { token: "" }; const saved = {};
@@ -213,7 +217,7 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
   const dialog = new EventTarget(); dialog.open = true;
   dialog.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
   const secretNodes = { ...makeNodes(), "#secret-dialog": dialog, "#created-token": { textContent: "one-time-secret" }, "#copy-token-button": { textContent: "Copied" } };
-  const lifecycle = Function("$", `"use strict"; ${clearCreatedSource}; ${bindSecretSource}; return { clearCreatedToken, bindSecretDialogCleanup };`)(selector => secretNodes[selector]);
+  const lifecycle = Function("$", "t", `"use strict"; ${clearCreatedSource}; ${bindSecretSource}; return { clearCreatedToken, bindSecretDialogCleanup };`)(selector => secretNodes[selector], translate);
   lifecycle.bindSecretDialogCleanup();
   dialog.dispatchEvent(new Event("close"));
   assert.equal(secretNodes["#created-token"].textContent, ""); assert.equal(secretNodes["#copy-token-button"].textContent, "Copy command");
@@ -221,10 +225,10 @@ test("login and one-time secret lifecycle clear sensitive DOM at runtime", async
   let resolveCopy;
   const pendingCopy = new Promise(resolve => { resolveCopy = resolve; });
   dialog.open = true; secretNodes["#created-token"].textContent = "race-secret"; secretNodes["#copy-token-button"].textContent = "Copy";
-  const copyCreatedToken = Function("$", "navigator", "showNotice", `"use strict"; ${copySource}; return copyCreatedToken;`)(selector => secretNodes[selector], { clipboard: { writeText: () => pendingCopy } }, () => {});
+  const copyCreatedToken = Function("$", "navigator", "showNotice", "t", `"use strict"; ${copySource}; return copyCreatedToken;`)(selector => secretNodes[selector], { clipboard: { writeText: () => pendingCopy } }, () => {}, translate);
   const authState = { token: "active-admin-token" }; let removed = false;
-  const logout = Function("state", "sessionStorage", "TOKEN_KEY", "$", "$$", "requestAnimationFrame", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; return logout;`)(
-    authState, { removeItem() { removed = true; } }, "token-key", selector => secretNodes[selector], selector => selector === "dialog[open]" && dialog.open ? [dialog] : [], callback => callback()
+  const logout = Function("state", "sessionStorage", "TOKEN_KEY", "$", "$$", "requestAnimationFrame", "t", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; return logout;`)(
+    authState, { removeItem() { removed = true; } }, "token-key", selector => secretNodes[selector], selector => selector === "dialog[open]" && dialog.open ? [dialog] : [], callback => callback(), translate
   );
   const copying = copyCreatedToken();
   logout(); resolveCopy(); await copying;
@@ -238,14 +242,14 @@ test("newer login and logout invalidate older pending login attempts", async () 
   const logoutSource = app.match(/function logout\(\)[\s\S]*?\n  }/)?.[0] || "";
   const nodes = {
     "#app": { hidden: true }, "#login-screen": { hidden: false }, "#login-error": { hidden: true, textContent: "" },
-    "#admin-token": { value: "", type: "password", focus() {} }, "#toggle-token": { textContent: "Show" },
+    "#admin-token": { value: "", type: "password", focus() {} }, "#toggle-token": { textContent: "Show", setAttribute(name, value) { this[name] = value; } },
     "#created-token": { textContent: "" }, "#copy-token-button": { textContent: "Copy command" }
   };
   const state = { token: "" }; const saved = {}; const loads = [];
   const loadAll = options => new Promise((resolve, reject) => loads.push({ resolve, reject, options }));
-  const runtime = Function("state", "sessionStorage", "TOKEN_KEY", "loadAll", "$", "$$", "requestAnimationFrame", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; ${loginSource}; return { login, logout };`)(
+  const runtime = Function("state", "sessionStorage", "TOKEN_KEY", "loadAll", "$", "$$", "requestAnimationFrame", "t", `"use strict"; let authAttempt = 0; let loginController = null; ${clearSource}; ${logoutSource}; ${loginSource}; return { login, logout };`)(
     state, { setItem(k, v) { saved[k] = v; }, removeItem(k) { delete saved[k]; } }, "token-key", loadAll,
-    selector => nodes[selector], () => [], callback => callback()
+    selector => nodes[selector], () => [], callback => callback(), key => ({ "common.show": "Show", "common.copyCommand": "Copy command" })[key] || key
   );
 
   const oldLogin = runtime.login("old-token");
@@ -270,4 +274,58 @@ test("README local server example uses absolute paths", () => {
   assert.match(readme, /TM_WEB_DIR="\$\(pwd\)\/web"/);
   assert.doesNotMatch(readme, /TM_DATABASE_PATH=\.\/|TM_WEB_DIR=\.\//);
   assert.match(readme, /HTTP Authorization header using the Bearer scheme/);
+});
+
+test("console defaults to complete Simplified Chinese and can persistently switch to English", () => {
+  assert.match(html, /<html lang="zh-CN">/);
+  assert.match(html, /<script defer src="\/assets\/i18n\.js"><\/script>[\s\S]*<script defer src="\/assets\/app\.js"><\/script>/);
+  assert.ok((html.match(/data-language-toggle/g) || []).length >= 2, "language switch is available before and after login");
+
+  const i18nPath = path.join(root, "web/assets/i18n.js");
+  assert.ok(fs.existsSync(i18nPath), "browser i18n module exists");
+  const i18n = require(i18nPath);
+  assert.equal(i18n.normalizeLocale(), "zh-CN");
+  assert.equal(i18n.normalizeLocale("zh-TW"), "zh-CN");
+  assert.equal(i18n.normalizeLocale("en-US"), "en");
+  assert.equal(i18n.translate("zh-CN", "nav.dashboard"), "仪表盘");
+  assert.equal(i18n.translate("en", "nav.dashboard"), "Dashboard");
+  assert.deepEqual(Object.keys(i18n.messages["zh-CN"]).sort(), Object.keys(i18n.messages.en).sort(), "Chinese and English dictionaries expose the same keys");
+
+  const keys = [...html.matchAll(/data-i18n(?:-(?:placeholder|aria-label|title))?="([^"]+)"/g)].map(match => match[1]);
+  assert.ok(keys.length > 50, "all visible static copy is marked for translation");
+  for (const locale of ["zh-CN", "en"]) {
+    for (const key of keys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing ${key}`);
+  }
+  const dynamicKeys = [...app.matchAll(/\bt\("([^"]+)"/g)].map(match => match[1]);
+  for (const locale of ["zh-CN", "en"]) {
+    for (const key of dynamicKeys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing runtime key ${key}`);
+  }
+
+  assert.match(app, /const LANGUAGE_KEY = "portloom\.language"/);
+  assert.match(app, /localStorage\.getItem\(LANGUAGE_KEY\)/);
+  assert.match(app, /localStorage\.setItem\(LANGUAGE_KEY, state\.locale\)/);
+  assert.match(app, /document\.documentElement\.lang = state\.locale/);
+});
+
+test("each module uses one sticky title and action row", () => {
+  const css = fs.readFileSync(path.join(root, "web/assets/app.css"), "utf8");
+  const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || "";
+  assert.ok(topbar, "module title row exists");
+  assert.match(topbar, /id="page-title"/);
+  assert.match(topbar, /id="context-action-button"/);
+  assert.match(topbar, /id="refresh-button"/);
+  assert.match(topbar, /data-language-toggle/);
+  assert.doesNotMatch(html.match(/<section id="view-tokens"[\s\S]*?<\/section>/)?.[0] || "", /id="new-token-button"/);
+  assert.doesNotMatch(html.match(/<section id="view-routes"[\s\S]*?<\/section>/)?.[0] || "", /id="new-route-button"/);
+  assert.doesNotMatch(html.match(/<section id="view-clients"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="clients\.title"/);
+  assert.doesNotMatch(html.match(/<section id="view-tokens"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="tokens\.addAgent"/);
+  assert.doesNotMatch(html.match(/<section id="view-routes"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="routes\.title"/);
+
+  const topbarCSS = css.match(/\.topbar\s*\{[^}]+\}/)?.[0] || "";
+  assert.match(topbarCSS, /position:\s*sticky/);
+  assert.match(topbarCSS, /top:\s*0/);
+  assert.match(topbarCSS, /z-index:\s*\d+/);
+  assert.match(app, /function updateContextAction\(\)/);
+  assert.match(app, /tokens:[\s\S]*context\.generateAgent/);
+  assert.match(app, /routes:[\s\S]*context\.addRoute/);
 });

@@ -1,8 +1,8 @@
 module github.com/lkhmm520/portloom
 
-go 1.24.0
+go 1.25.0
 
-toolchain go1.24.13
+toolchain go1.25.12
 
 require modernc.org/sqlite v1.39.1
 

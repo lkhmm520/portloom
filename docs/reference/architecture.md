@@ -1,29 +1,40 @@
 # 系统架构
 
 ```text
-Browser ──HTTPS──> NPM ──Host──> Gateway :8081
-                    │                  │
-                    │ admin           ▼
-                    └────────> Server/SQLite
-                                      ▲
-                                      │ HTTPS heartbeat
-NAS service <── Agent <── OpenSSH -R ─┘
+                           公网Docker主机
+浏览器 ──HTTPS──> Caddy/现有入口 ──Host──> Gateway :8081
+                         │                   │
+                         │ 管理域名          ▼
+                         └──────────> Server / SQLite
+                                              │ 写入授权卷
+                                              ▼
+                                         managed sshd :2222
+                                              ▲
+                                              │ Agent主动建立OpenSSH -R
+                                              │
+内网服务 <────────────── Agent <──────────────┘
 ```
 
-## 控制平面
+## 管理路径
 
-Server 的 SQLite 保存 Client、令牌校验值、Route、分配端口、revision 与 observation。当前设计预期单 Server 实例，不支持多实例同时写入。
+Server的SQLite保存Agent、令牌校验值、SSH公钥、路由、分配端口和状态。WebUI调用管理API；Agent通过HTTPS注册、拉取路由和发送心跳。当前设计只有一个Server写入者。
 
-## 数据平面
+## 隧道路径
 
-NPM 终止 TLS；Gateway 按 Host 查询已启用 HTTP 路由，代理到 VPS 的 `127.0.0.1:<allocated-port>`；宿主 OpenSSH 再把流量带回 NAS 本地服务。
+每个Agent维持一个OpenSSH ControlMaster。路由变更时，Agent使用`ssh -O forward/cancel -R`动态增删反向转发，不需要重启主连接。sshd只允许回环远程转发。
+
+## 公网请求路径
+
+入口终止TLS并保留Host。Gateway按Host选择已启用且已收敛的HTTP路由，再代理到VPS回环端口。OpenSSH把连接带回Agent，Agent连接路由配置的本地目标。
+
+简易安装的Caddy使用受随机Token保护的本地`ask`端点，只为管理域名和WebUI中已启用的HTTP路由申请证书。未知域名不会触发证书签发。
 
 ## 故障行为
 
-- Server短暂不可用时，已运行 Agent 保留已建立转发并重试；
-- Agent重启后需要控制平面可用，才能恢复期望路由；
-- SSH ControlMaster失效时，Agent重建主连接与转发；
-- 取消转发失败时，Agent保留旧观测版本，不伪报收敛；
-- 本地目标不可用时，隧道进程可能仍存在，但 Local 保持 down。
-
-更深层设计说明见仓库原始 [`docs/architecture.md`](https://github.com/lkhmm520/portloom/blob/main/docs/architecture.md)。
+- Server短暂不可用时，运行中的Agent保留已有转发并重试；
+- Agent重启后从Server恢复期望路由；
+- SSH主连接失效时，Agent重建主连接和转发；
+- 主机公钥变化时，Agent严格拒绝连接；
+- Server启动时从SQLite重建Agent授权文件；
+- 取消转发失败时不伪报版本收敛；
+- 本地服务不可用时，隧道可能仍存在，但Local状态保持down。

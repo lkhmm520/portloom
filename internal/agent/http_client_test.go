@@ -62,6 +62,36 @@ func TestHTTPServerClientReportsObservedState(t *testing.T) {
 		t.Fatalf("got=%#v", got)
 	}
 }
+
+func TestHTTPServerClientRegistersSSHKeyWithAuthentication(t *testing.T) {
+	var got struct {
+		PublicKey string `json:"public_key"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/agent/ssh-key" {
+			t.Errorf("request=%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer token-1" || r.Header.Get("X-Client-ID") != "nas-01" {
+			t.Errorf("headers=%v", r.Header)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, err := NewHTTPServerClient(server.URL, "nas-01", "token-1", true, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RegisterSSHKey(context.Background(), "ssh-ed25519 AAAA"); err != nil {
+		t.Fatal(err)
+	}
+	if got.PublicKey != "ssh-ed25519 AAAA" {
+		t.Fatalf("public key = %q", got.PublicKey)
+	}
+}
+
 func TestHTTPServerClientRejectsUnexpectedStatusAndOversizedResponse(t *testing.T) {
 	for name, handler := range map[string]http.HandlerFunc{"status": func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "nope", 502) }, "large": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(make([]byte, maxResponseBytes+1)) }} {
 		t.Run(name, func(t *testing.T) {

@@ -1,14 +1,13 @@
 # Reverse proxy integration
 
-PortLoom deliberately leaves TLS at NPM, Caddy, or Nginx.
+The easy installer already includes Caddy. Use this page when the public host already runs Caddy, Nginx, or Nginx Proxy Manager, or when another ingress must own HTTPS.
 
-## Administration host
+| Upstream | Purpose |
+| --- | --- |
+| `127.0.0.1:8080` | management hostname, WebUI, and API |
+| `127.0.0.1:8081` | shared Gateway for all HTTP application hostnames |
 
-Proxy an access-controlled hostname such as `portloom.example.com` to Server port `8080`, enable TLS, force HTTPS, and preferably add a VPN or reverse-proxy access list.
-
-## Application hosts
-
-All HTTP application hostnames can share port `8081`; the original `Host` must be preserved.
+Send the management hostname to 8080. Send application hostnames to 8081 and preserve the original Host header.
 
 ```nginx
 location / {
@@ -19,6 +18,8 @@ location / {
 }
 ```
 
-If the reverse proxy is containerized, its `127.0.0.1` is not the host. Use host networking, a reviewed host-gateway address, or a private interface binding.
+Set WebSocket headers, upload limits, and timeouts for each application. Test Range requests for media services.
 
-A Gateway 404 usually means no enabled HTTP route matches the Host. A 502 means a route matched but its SSH loopback listener is unavailable.
+A bridge-network proxy cannot reach host loopback through its own `127.0.0.1`. Use host networking or a firewall-protected private bind. Do not expose management port 8080 directly to the internet.
+
+A Gateway 404 means no enabled HTTP route matches Host. A 502 means a route matched but the Agent tunnel or local service is unavailable.

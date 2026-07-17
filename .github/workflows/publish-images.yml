@@ -13,10 +13,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality-gate:
+    uses: ./.github/workflows/test.yml
+
   publish:
     name: ${{ matrix.component }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    needs: quality-gate
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +31,9 @@ jobs:
           - component: agent
             image: ghcr.io/lkhmm520/portloom-agent
             dockerfile: Dockerfile.agent
+          - component: sshd
+            image: ghcr.io/lkhmm520/portloom-sshd
+            dockerfile: Dockerfile.sshd
           - component: docs
             image: ghcr.io/lkhmm520/portloom-docs
             dockerfile: Dockerfile.docs
@@ -47,6 +54,11 @@ jobs:
             fi
           fi
           echo "stable=${stable}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to GHCR
@@ -81,8 +93,63 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
+            VERSION=${{ steps.release.outputs.version }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.build-date.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+  verify-public-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Verify images are anonymously readable
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for image in server agent sshd docs; do
+            docker buildx imagetools inspect "ghcr.io/lkhmm520/portloom-${image}:${version}" >/dev/null
+          done
+      - name: Verify Server reports the exact published Agent tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          verify_token=$(openssl rand -hex 16)
+          docker run -d --name portloom-release-version \
+            -e TM_LISTEN_ADDR=0.0.0.0:8080 -e TM_GATEWAY_ADDR=127.0.0.1:8081 \
+            -e TM_DATABASE_PATH=/data/portloom.db -e TM_WEB_DIR=/app/web \
+            -e TM_ADMIN_TOKEN="$verify_token" \
+            -p 127.0.0.1:18080:8080 "ghcr.io/lkhmm520/portloom-server:${version}"
+          trap 'docker rm -f portloom-release-version >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            reported=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              -H "Authorization: Bearer $verify_token" \
+              http://127.0.0.1:18080/api/v1/system | jq -r .version 2>/dev/null || true)
+            [ "$reported" = "$version" ] && break
+            [ "$attempt" = 30 ] && { echo "reported version '$reported', expected '$version'" >&2; exit 1; }
+            sleep 2
+          done
+          docker buildx imagetools inspect "ghcr.io/lkhmm520/portloom-agent:${reported}" >/dev/null
+      - name: Verify public installer scripts
+        run: |
+          for script in install-server.sh install-agent.sh; do
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "https://docs.961121.xyz/${script}" >"/tmp/${script}"; then
+                if grep -q '^#!/usr/bin/env bash' "/tmp/${script}"; then
+                  expected_sha=$(sha256sum "docs/public/${script}" | cut -d ' ' -f 1)
+                  public_sha=$(sha256sum "/tmp/${script}" | cut -d ' ' -f 1)
+                  [ "$public_sha" = "$expected_sha" ] && break
+                  echo "installer digest not current yet: ${script}" >&2
+                else
+                  echo "installer content is not a Bash script yet: ${script}" >&2
+                fi
+              fi
+              if [ "$attempt" = 30 ]; then
+                echo "installer unavailable or stale: ${script}" >&2
+                exit 1
+              fi
+              sleep 10
+            done
+          done

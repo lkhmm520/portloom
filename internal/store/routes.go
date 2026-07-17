@@ -16,6 +16,18 @@ func (s *Store) GetRoute(ctx context.Context, id string) (domain.Route, error) {
 	return getRoute(ctx, s.db, id)
 }
 
+func (s *Store) HTTPDomainEnabled(ctx context.Context, domainName string) (bool, error) {
+	var enabled bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM routes INDEXED BY routes_http_domain
+		WHERE protocol = 'http' AND domain = ? AND enabled = 1
+	)`, domainName).Scan(&enabled)
+	if err != nil {
+		return false, fmt.Errorf("check enabled HTTP domain: %w", err)
+	}
+	return enabled, nil
+}
+
 func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
 	rows, err := s.db.QueryContext(ctx, routeSelect+` ORDER BY created_at, id`)
 	if err != nil {

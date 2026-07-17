@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/managedssh"
 	"github.com/lkhmm520/portloom/internal/sshctl"
 	"net"
 	"strconv"
@@ -151,6 +152,19 @@ func TestReconcilerReportsFailedCancellationForRemovedRoute(t *testing.T) {
 		t.Fatalf("observed=%#v", observed)
 	}
 }
+func TestReconcilerUsesConfiguredIsolatedRemoteBindAddress(t *testing.T) {
+	runner := &fakeRunner{}
+	address, err := managedssh.BindAddress("agent-isolated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler := NewReconciler(runner, fakeChecker{}, WithRemoteBindHost(address))
+	reconciler.Reconcile(context.Background(), DesiredState{Revision: 1, Routes: []domain.Route{testRoute()}})
+	if len(runner.added) != 1 || runner.added[0].BindHost != address {
+		t.Fatalf("forwards=%+v want bind host %s", runner.added, address)
+	}
+}
+
 func TestTCPHealthCheckerUsesRealLocalTCPConnection(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

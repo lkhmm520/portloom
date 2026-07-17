@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
@@ -30,8 +31,9 @@ type Options struct {
 }
 
 type Store struct {
-	db      *sql.DB
-	options Options
+	db        *sql.DB
+	options   Options
+	sshKeysMu sync.Mutex
 }
 
 func Open(path string, options Options) (*Store, error) {
@@ -72,6 +74,7 @@ CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
+  ssh_public_key TEXT NOT NULL DEFAULT '',
   desired_revision INTEGER NOT NULL DEFAULT 0,
   observed_revision INTEGER NOT NULL DEFAULT 0,
   last_seen_at TEXT,
@@ -109,6 +112,87 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime
 	}
 	if err := s.ensureEnrollmentExpiryNanos(ctx); err != nil {
 		return err
+	}
+	if err := s.ensureAgentSSHKey(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureEnrollmentClaims(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureAgentSSHKey(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(agents)`)
+	if err != nil {
+		return fmt.Errorf("inspect agent schema: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect agent column: %w", err)
+		}
+		if name == "ssh_public_key" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate agent schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close agent schema rows: %w", err)
+	}
+	if !found {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE agents ADD COLUMN ssh_public_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add agent SSH key: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)`, formatTime(time.Now().UTC())); err != nil {
+		return fmt.Errorf("record agent SSH key migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureEnrollmentClaims(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(enrollment_tokens)`)
+	if err != nil {
+		return fmt.Errorf("inspect enrollment claim schema: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect enrollment claim column: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate enrollment claim schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close enrollment claim schema: %w", err)
+	}
+	if !columns["request_id"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE enrollment_tokens ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add enrollment request ID: %w", err)
+		}
+	}
+	if !columns["agent_id"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE enrollment_tokens ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add enrollment agent ID: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, ?)`, formatTime(time.Now().UTC())); err != nil {
+		return fmt.Errorf("record enrollment claim migration: %w", err)
 	}
 	return nil
 }
@@ -259,6 +343,79 @@ func (s *Store) ConsumeEnrollmentToken(ctx context.Context, token, agentName str
 		return domain.Agent{}, "", fmt.Errorf("commit enrollment: %w", err)
 	}
 	return agent, apiToken, nil
+}
+
+func (s *Store) ClaimEnrollmentToken(ctx context.Context, token, agentName, requestID, agentToken string) (domain.Agent, error) {
+	var agent domain.Agent
+	agentName = strings.TrimSpace(agentName)
+	requestID = strings.TrimSpace(requestID)
+	agentToken = strings.TrimSpace(agentToken)
+	if token == "" || agentName == "" || len(requestID) != 64 || len(agentToken) != 64 {
+		return agent, ErrInvalidEnrollmentToken
+	}
+	if _, err := hex.DecodeString(requestID); err != nil {
+		return agent, ErrInvalidEnrollmentToken
+	}
+	if _, err := hex.DecodeString(agentToken); err != nil {
+		return agent, ErrInvalidEnrollmentToken
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return agent, fmt.Errorf("begin enrollment claim: %w", err)
+	}
+	defer tx.Rollback()
+	var expiresAt int64
+	var usedAt sql.NullString
+	var storedRequestID, storedAgentID string
+	err = tx.QueryRowContext(ctx, `SELECT expires_at_unix_nano, used_at, request_id, agent_id FROM enrollment_tokens WHERE token_hash = ?`, hashToken(token)).Scan(&expiresAt, &usedAt, &storedRequestID, &storedAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return agent, ErrInvalidEnrollmentToken
+	}
+	if err != nil {
+		return agent, fmt.Errorf("read enrollment claim: %w", err)
+	}
+	if usedAt.Valid {
+		if storedRequestID != requestID || storedAgentID == "" {
+			return agent, ErrInvalidEnrollmentToken
+		}
+		var createdAt, updatedAt, storedAgentTokenHash string
+		err = tx.QueryRowContext(ctx, `SELECT id, name, token_hash, desired_revision, observed_revision, created_at, updated_at FROM agents WHERE id = ?`, storedAgentID).Scan(
+			&agent.ID, &agent.Name, &storedAgentTokenHash, &agent.DesiredRevision, &agent.ObservedRevision, &createdAt, &updatedAt)
+		if errors.Is(err, sql.ErrNoRows) || agent.Name != agentName || storedAgentTokenHash != hashToken(agentToken) {
+			return domain.Agent{}, ErrInvalidEnrollmentToken
+		}
+		if err != nil {
+			return domain.Agent{}, fmt.Errorf("read claimed agent: %w", err)
+		}
+		agent.CreatedAt, agent.UpdatedAt = parseTime(createdAt), parseTime(updatedAt)
+		return agent, nil
+	}
+	now := time.Now().UTC()
+	if expiresAt <= now.UnixNano() {
+		return agent, ErrInvalidEnrollmentToken
+	}
+	agentID, err := randomID()
+	if err != nil {
+		return agent, err
+	}
+	agent = domain.Agent{ID: agentID, Name: agentName, CreatedAt: now, UpdatedAt: now}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO agents (id, name, token_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		agent.ID, agent.Name, hashToken(agentToken), formatTime(now), formatTime(now)); err != nil {
+		return domain.Agent{}, fmt.Errorf("create claimed agent: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE enrollment_tokens SET used_at = ?, request_id = ?, agent_id = ? WHERE token_hash = ? AND used_at IS NULL`,
+		formatTime(now), requestID, agent.ID, hashToken(token))
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("consume enrollment claim: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil || rowsAffected != 1 {
+		return domain.Agent{}, ErrInvalidEnrollmentToken
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Agent{}, fmt.Errorf("commit enrollment claim: %w", err)
+	}
+	return agent, nil
 }
 
 func (s *Store) AuthenticateAgent(ctx context.Context, token string) (domain.Agent, error) {

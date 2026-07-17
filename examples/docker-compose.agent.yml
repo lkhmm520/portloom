@@ -11,15 +11,19 @@ services:
       TM_CLIENT_NAME: ${TM_CLIENT_NAME:?set TM_CLIENT_NAME in agent.env}
       TM_ENROLLMENT_TOKEN: ${TM_ENROLLMENT_TOKEN:-}
       TM_AGENT_STATE_PATH: /data/agent.json
+      TM_MANAGED_SSH_ISOLATED: ${TM_MANAGED_SSH_ISOLATED:-true}
+      TM_MANAGED_SSH_READY_PATH: /data/managed-ssh.ready
       TM_HEARTBEAT_INTERVAL: ${TM_HEARTBEAT_INTERVAL:-30s}
       TM_SSH_HOST: ${TM_SSH_HOST:?set TM_SSH_HOST in agent.env}
-      TM_SSH_PORT: ${TM_SSH_PORT:-22}
+      TM_SSH_PORT: ${TM_SSH_PORT:-2222}
       TM_SSH_USER: ${TM_SSH_USER:-tunnel}
       TM_SSH_IDENTITY_FILE: /run/secrets/ssh_private_key
+      TM_SSH_PUBLIC_KEY_FILE: /run/secrets/ssh_public_key
       TM_SSH_KNOWN_HOSTS_FILE: /etc/ssh/ssh_known_hosts
     volumes:
       - ${TM_AGENT_DATA_DIR:-./data/agent}:/data
       - ${TM_SSH_PRIVATE_KEY_PATH:-./secrets/id_ed25519}:/run/secrets/ssh_private_key:ro
+      - ${TM_SSH_PUBLIC_KEY_PATH:-./secrets/id_ed25519.pub}:/run/secrets/ssh_public_key:ro
       - ${TM_SSH_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/etc/ssh/ssh_known_hosts:ro
     read_only: true
     tmpfs:

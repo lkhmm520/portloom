@@ -6,7 +6,7 @@
 
 ## 首次启动
 
-Agent 使用 `TM_CLIENT_NAME` 与 `TM_ENROLLMENT_TOKEN` 调用注册接口，获得 Client ID 和长期 Agent Token，并写入 `/data/agent.json`。
+Agent 首先在本地生成请求 ID 和长期 Agent Token，原子写入 `/data/agent.json.pending`，再连同 `TM_CLIENT_NAME` 与 `TM_ENROLLMENT_TOKEN` 调用注册接口。Server 只保存长期 Token 的校验值并返回 Client ID；`/data/agent.json` 持久化成功后才删除 pending Claim。即使注册响应丢失，Agent 也能用同一请求 ID 安全取回同一 Client，而无需再次消费令牌。
 
 注册完成后：
 

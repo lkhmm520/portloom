@@ -2,16 +2,15 @@
 layout: home
 hero:
   name: PortLoom
-  text: Weave reverse tunnels into manageable infrastructure
-  tagline: A self-hosted control plane for NAS and homelab publishing. Keep your existing NPM, TLS, and DNS while adding restricted OpenSSH tunnels, layered health, and rollback-friendly desired state.
-  image: { src: /hero-loom.svg, alt: Animated PortLoom tunnel fabric }
+  text: Stable, reliable, fast tunnel proxying
+  tagline: Publish NAS, homelab, and internal web services through a public host. Run Server on the public Docker host and Agent inside the private network. The Agent makes the encrypted outbound connection, so the private network needs no inbound port.
+  image: { src: /hero-loom.svg, alt: PortLoom tunnel connection diagram }
   actions:
-    - { theme: brand, text: Five-minute quick start, link: /en/guide/quick-start }
-    - { theme: alt, text: Install with Docker, link: /en/install/docker }
-    - { theme: alt, text: GitHub, link: 'https://github.com/lkhmm520/portloom' }
+    - { theme: brand, text: Start installing, link: /en/guide/quick-start }
+    - { theme: alt, text: How it works, link: /en/guide/what-is-portloom }
 features:
-  - { title: Preserve your ingress, details: 'NPM keeps certificates and HTTPS. Multiple domains share one Host-routing gateway while old paths remain available during migration.' }
-  - { title: Observe every layer, details: 'Local reachability, SSH tunnel state, and desired/observed revisions are shown separately.' }
-  - { title: Restricted by default, details: 'Dedicated SSH account, pinned host key, loopback forwards, non-root containers, read-only roots, and dropped capabilities.' }
+  - { title: Two hosts, one install command, details: 'Install Server on the public Docker host, then copy one command from the WebUI to the NAS. The installer handles keys, host identity, and enrollment.' }
+  - { title: Manage routes in the WebUI, details: 'Choose an Agent and enter the internal address, port, and public hostname. Adding a service does not require editing SSH commands.' }
+  - { title: Safe defaults are included, details: 'Agents connect outbound. The managed SSH account has no shell and can create loopback reverse forwards only. Containers never mount the Docker socket.' }
 ---
 <HomeFlow />

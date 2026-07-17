@@ -13,6 +13,12 @@ type Agent struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// AgentSSHKey is the public key authorized for one enrolled Agent.
+type AgentSSHKey struct {
+	AgentID   string
+	PublicKey string
+}
+
 // RouteObservation reports an agent's current state for one route.
 type RouteObservation struct {
 	RouteID          string `json:"route_id"`

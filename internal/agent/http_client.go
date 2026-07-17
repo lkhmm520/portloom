@@ -82,6 +82,25 @@ func (c *HTTPServerClient) ReportObserved(ctx context.Context, state ObservedSta
 	defer resp.Body.Close()
 	return checkStatus(resp)
 }
+func (c *HTTPServerClient) RegisterSSHKey(ctx context.Context, publicKey string) error {
+	body, err := json.Marshal(map[string]string{"public_key": publicKey})
+	if err != nil {
+		return fmt.Errorf("encode SSH key: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint("/api/v1/agent/ssh-key").String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create SSH key request: %w", err)
+	}
+	c.authenticate(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("register SSH key: %w", err)
+	}
+	defer resp.Body.Close()
+	return checkStatus(resp)
+}
+
 func (c *HTTPServerClient) endpoint(path string) *url.URL {
 	copy := *c.baseURL
 	copy.Path = strings.TrimRight(copy.Path, "/") + path
@@ -94,12 +113,28 @@ func (c *HTTPServerClient) authenticate(req *http.Request) {
 	req.Header.Set("X-Client-ID", c.clientID)
 	req.Header.Set("Accept", "application/json")
 }
+
+type HTTPStatusError struct {
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("server returned %s: %s", e.Status, e.Body)
+}
+
+func (e *HTTPStatusError) Temporary() bool {
+	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooEarly ||
+		e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+}
+
 func checkStatus(resp *http.Response) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	return &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status, Body: strings.TrimSpace(string(body))}
 }
 func readLimited(reader io.Reader) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(reader, maxResponseBytes+1))

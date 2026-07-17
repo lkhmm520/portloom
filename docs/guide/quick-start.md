@@ -1,57 +1,84 @@
 # 五分钟快速开始
 
-本页使用已发布的 GHCR 镜像。完整生产部署请继续阅读[生产环境部署](/install/production)。
+你需要两台能运行 Docker Compose 的 Linux 主机：一台有公网 IP 的 VPS，以及一台 NAS 或内网服务器。还需要一个域名。
 
-## 1. 下载 Server 模板
+## 0. 先准备 DNS 和防火墙
 
-```bash
-mkdir -p portloom/server && cd portloom/server
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.server.yml
-curl -Lo server.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/server.env.example
-mkdir -p data/server
-sudo chown -R 65532:65532 data/server
-chmod 700 data/server
-openssl rand -hex 32
+把管理域名解析到 VPS，例如：
+
+```text
+portloom.example.com  A  203.0.113.10
 ```
 
-把随机值写入 `server.env` 的 `TM_ADMIN_TOKEN`，然后启动：
+如果所有服务都放在同一主域名下，可以再添加一次通配符解析：
 
-```bash
-docker compose --env-file server.env -f docker-compose.server.yml config
-docker compose --env-file server.env -f docker-compose.server.yml up -d
-curl --fail http://127.0.0.1:8080/healthz
+```text
+*.example.com  A  203.0.113.10
 ```
 
-## 2. 配置 HTTPS 与受限 SSH
+VPS 防火墙放行 TCP `80`、`443` 和 `2222`。NAS 不需要开放入站端口。
 
-在 NPM 中把管理域名转发到 Server `8080`，业务域名统一转发到 `8081` 并保留 `Host`。VPS 上的 `tunnel` 账户必须使用 `/usr/sbin/nologin`，禁止命令与 Shell，只允许绑定回环地址的远程转发；完整配置见[生产环境部署](/install/production)。
+## 1. 在公网主机安装 Server
 
-## 3. 准备并注册 Agent
-
-在 NAS 下载模板并**先生成实际密钥和 `known_hosts`**：
+先下载并查看脚本，再执行：
 
 ```bash
-mkdir -p portloom/agent/{data/agent,secrets} && cd portloom/agent
-curl -LO https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/docker-compose.agent.yml
-curl -Lo agent.env https://raw.githubusercontent.com/lkhmm520/portloom/main/examples/agent.env.example
-ssh-keygen -t ed25519 -a 64 -N '' -f secrets/id_ed25519 -C portloom-agent
-ssh-keyscan -p 22 tunnel.example.com > secrets/known_hosts
-sudo chown -R 65532:65532 data secrets
-chmod 700 data/agent secrets
-chmod 600 secrets/id_ed25519
-chmod 644 secrets/known_hosts
+curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+less install-server.sh
+chmod 0700 install-server.sh
+./install-server.sh --domain portloom.example.com
 ```
 
-通过可信渠道核对 `known_hosts` 指纹，并把 `secrets/id_ed25519.pub` 加到 VPS `tunnel` 用户的 `authorized_keys`，使用[限制模板](/reference/templates)。登录控制台创建一次性令牌，填写 `agent.env` 后启动：
+安装器会启动三个容器：
 
-```bash
-docker compose --env-file agent.env -f docker-compose.agent.yml config
-docker compose --env-file agent.env -f docker-compose.agent.yml up -d
-docker compose -f docker-compose.agent.yml logs --tail=100 agent
-```
+- `portloom-server`：WebUI、API 和路由网关；
+- `portloom-sshd`：PortLoom 专用的受限 SSH 入口；
+- `portloom-caddy`：自动申请管理域名和业务域名的 HTTPS 证书。
 
-注册成功后，从 `agent.env` 删除 `TM_ENROLLMENT_TOKEN` 并重新创建容器。
+结束时会显示 WebUI 地址和随机管理员令牌。
 
-## 4. 创建第一条路由
+## 2. 打开 WebUI
 
-在控制台选择客户端，填写域名、NAS 本地地址与端口，启用路由。依次验证：本地层为 `up`、隧道层为 `up`、期望与观测版本一致，然后访问公网 HTTPS 地址。
+访问 `https://portloom.example.com`，输入安装器显示的管理员令牌。
+
+进入 **Add Agent**，填写：
+
+- Agent name：例如 `home-nas`；
+- Server URL：`https://portloom.example.com`；
+- Public Server host：`portloom.example.com`；
+- SSH tunnel port：默认 `2222`。
+
+点击 **Generate command**，网页会生成一条只显示一次的安装命令。
+
+## 3. 在 NAS 安装 Agent
+
+把上一步的完整命令粘贴到 NAS 或内网 Docker 主机执行。安装器会自动：
+
+- 生成独立 Ed25519 密钥；
+- 写入Server主机公钥，不使用不可信的`ssh-keyscan`结果；
+- 使用一次性令牌注册；
+- 上传Agent公钥并更新受限授权文件；
+- 启动Agent，注册成功后从配置中删除一次性令牌。
+
+几秒后，WebUI 的 Clients 页面会显示新主机。
+
+## 4. 添加第一条路由
+
+在 **Routes → Add HTTP route** 中填写：
+
+| 字段 | 示例 |
+| --- | --- |
+| Name | Jellyfin |
+| Client | home-nas |
+| Protocol | HTTP |
+| Public domain | jellyfin.example.com |
+| Local host | 127.0.0.1，或NAS局域网服务地址 |
+| Local port | 8096 |
+
+保存后等待本地服务和隧道状态变为绿色，再访问 `https://jellyfin.example.com`。
+
+::: tip DNS
+如果没有配置通配符解析，请单独把 `jellyfin.example.com` 的 A/AAAA 记录指向VPS。Caddy只会为WebUI中已启用的HTTP路由申请证书。
+:::
+
+配置文件和升级方式见[Docker安装](/install/docker)。已有反向代理或需要手动审计全部Compose参数时，阅读[生产环境部署](/install/production)。

@@ -5,10 +5,10 @@ search: false
 # PortLoom MVP Work Plan
 
 ## Goal
-Build a Dockerized server and NAS agent that manage OpenSSH reverse tunnels through a Web UI. Public TLS remains on the DMIT NPM; FRP is not used.
+Build a two-host Docker deployment that manages OpenSSH reverse tunnels through a WebUI. The default public host includes managed sshd and Caddy; existing ingress is optional, and FRP is not used.
 
 ## Acceptance criteria
-- Server and agent images build and start.
+- Server, Agent, managed sshd, and docs images build and start.
 - Tests pass in a clean Go container.
 - SQLite state persists.
 - Admin creates one-time enrollment tokens.
@@ -31,4 +31,4 @@ Build a Dockerized server and NAS agent that manage OpenSSH reverse tunnels thro
 - [ ] T10 Integration and review
 
 ## Safety
-Development never modifies current NPM, DNS, containers, SSH tunnels or public ports. Test services use isolated loopback ports.
+Development never modifies production ingress, DNS, containers, SSH tunnels, or public ports. Test services use isolated loopback ports.

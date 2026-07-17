@@ -1,19 +1,26 @@
 # Architecture
 
 ```text
-Browser ──HTTPS──> NPM ──Host──> Gateway :8081
-                    │                  │
-                    │ admin           ▼
-                    └────────> Server/SQLite
-                                      ▲
-                                      │ HTTPS heartbeat
-NAS service <── Agent <── OpenSSH -R ─┘
+                             Public Docker host
+Browser ──HTTPS──> Caddy/existing ingress ──Host──> Gateway :8081
+                            │                         │
+                            │ management host         ▼
+                            └────────────────> Server / SQLite
+                                                       │ authorization volume
+                                                       ▼
+                                                  managed sshd :2222
+                                                       ▲
+                                                       │ Agent initiates OpenSSH -R
+                                                       │
+Internal service <──────────── Agent <─────────────────┘
 ```
 
-The Server stores clients, token verifiers, routes, allocated ports, revisions, and observations in SQLite. The current design expects one Server writer, not active/active replicas.
+Server stores Agents, token verifiers, SSH public keys, routes, allocated ports, and observations in SQLite. The WebUI uses the admin API; Agents enroll, sync, and heartbeat over HTTPS. One Server writer owns the database.
 
-NPM terminates TLS. The Gateway resolves an enabled HTTP route by Host and proxies to `127.0.0.1:<allocated-port>` on the VPS. Host OpenSSH carries that connection back to the NAS target.
+Each Agent keeps one OpenSSH ControlMaster and applies route changes with `ssh -O forward/cancel -R`. Managed sshd permits loopback remote forwarding only.
 
-If the control plane is briefly unavailable, a running Agent preserves established forwards and retries. After an Agent restart, the control plane must be reachable to restore desired routes. Failed ControlMasters are rebuilt; failed cancellation keeps the previous observed revision instead of reporting false convergence.
+Ingress terminates TLS and preserves Host. Gateway selects an enabled, converged HTTP route and proxies to its VPS loopback port. OpenSSH carries the connection to the Agent and its configured local target.
 
-See the deeper repository [architecture document](https://github.com/lkhmm520/portloom/blob/main/docs/architecture.md).
+The easy Caddy deployment uses a random-token-protected local ask endpoint. It obtains certificates only for the management hostname and enabled HTTP routes.
+
+Running Agents preserve existing forwards during a brief Server outage. Agents rebuild a failed SSH master. Host-key changes fail closed. Server rebuilds Agent authorization from SQLite at startup, and failed forward cancellation never reports false convergence.

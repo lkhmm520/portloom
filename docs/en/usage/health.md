@@ -12,6 +12,6 @@ The OpenSSH ControlMaster is valid and the remote `-R` forward exists. Typical f
 
 ## Public / revision
 
-Desired and observed revisions match and the route is enabled. This proves Agent convergence, not external DNS or TLS.
+For an HTTP route, Public is published only when desired and observed revisions match, the route is enabled, and Tunnel is up. This proves Agent and built-in Gateway convergence, not external DNS or TLS. TCP compatibility records always show `metadata only` and are never counted as published or healthy.
 
-Troubleshoot in order: local NAS request → Agent Local state → SSH/Tunnel → Gateway with Host → NPM/TLS/DNS → public request.
+Troubleshoot in order: local NAS request → Agent Local state → SSH/Tunnel → Gateway with Host → public ingress/TLS/DNS → public request.

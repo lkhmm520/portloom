@@ -2,7 +2,7 @@
 
 Create an enrollment token in the console. Tokens expire, are single-use, have a maximum lifetime of 30 days, and are shown in plaintext only once. The Server stores only a verifier.
 
-On first start, the Agent submits `TM_CLIENT_NAME` and `TM_ENROLLMENT_TOKEN`, receives a Client ID and long-lived Agent token, and persists both in `/data/agent.json`.
+On first start, the Agent generates a request ID and long-lived Agent token locally, atomically persists them in `/data/agent.json.pending`, and submits their values with `TM_CLIENT_NAME` and `TM_ENROLLMENT_TOKEN`. The Server stores only the Agent-token verifier and returns the Client ID. After `/data/agent.json` is durable, the pending claim is removed. If a response is lost, the same request ID can safely recover the same Client without consuming another token.
 
 After successful enrollment:
 

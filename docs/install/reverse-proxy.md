@@ -1,20 +1,19 @@
 # 反向代理接入
 
-PortLoom 不接管 TLS。推荐让 NPM、Caddy 或 Nginx 继续作为公网入口。
+简易安装器已经包含Caddy。本页只适用于公网主机已有Caddy、Nginx或Nginx Proxy Manager，或需要把HTTPS交给其他入口的部署。
 
-## 管理域名
+## 上游
 
-例如 `portloom.example.com`：
+PortLoom有两个HTTP上游：
 
-- Scheme：`http`
-- Forward Host：Server 宿主地址
-- Forward Port：`8080`
-- TLS：启用并强制 HTTPS
-- Access List/VPN：强烈建议
+| 上游 | 用途 |
+| --- | --- |
+| `127.0.0.1:8080` | 管理域名、WebUI和API |
+| `127.0.0.1:8081` | 所有HTTP业务域名共享的Gateway |
 
-## 业务域名
+管理域名必须只转发到8080。业务域名转发到8081，并保留原始Host。
 
-所有 HTTP 业务域名均可转发到同一个 `8081` Gateway。必须保留原始 `Host`。
+## Nginx示例
 
 ```nginx
 location / {
@@ -25,7 +24,9 @@ location / {
 }
 ```
 
-如果反向代理在容器中，`127.0.0.1` 指向容器自身。可使用 host network、`host-gateway` 或仅在私网接口监听 PortLoom。
+WebSocket升级头、上传大小和超时应按业务服务设置。Jellyfin等大文件服务还应验证Range请求。
+
+如果反向代理运行在桥接网络容器中，容器里的`127.0.0.1`不是宿主机。可以让入口使用host网络，或把PortLoom监听到受防火墙保护的私网地址。不要为了容器互通把8080直接暴露到公网。
 
 ## 验证
 
@@ -34,4 +35,4 @@ curl -i -H 'Host: app.example.com' http://127.0.0.1:8081/
 curl -I https://app.example.com/
 ```
 
-Gateway 返回 404 通常表示没有匹配的已启用 HTTP 路由；502 表示找到路由但 SSH 回环端口不可用。
+Gateway返回404表示没有匹配且已启用的HTTP路由；502表示路由存在，但Agent隧道或本地服务不可用。

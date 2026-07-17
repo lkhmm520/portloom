@@ -6,7 +6,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
-.PHONY: all build server agent test test-race cover vet fmt fmt-check web-check docs-install docs-dev docs-build check docker-build clean
+.PHONY: all build server agent test test-race cover vet fmt fmt-check web-check docs-install docs-dev docs-build check integration-test docker-build clean
 
 all: check build
 build: server agent
@@ -42,9 +42,16 @@ docs-dev: docs-install
 docs-build: docs-install
 	$(NPM) run docs:build
 check: fmt-check vet test web-check docs-build
+integration-test:
+	./tests/installers_test.sh
+	./tests/managed_sshd_image_test.sh
+	./tests/server_compose_cold_start_test.sh
+	./tests/installers_e2e_test.sh
+	./tests/two_host_flow_test.sh
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -f Dockerfile.server -t portloom-server:$(VERSION) .
 	docker build --build-arg VERSION=$(VERSION) -f Dockerfile.agent -t portloom-agent:$(VERSION) .
+	docker build -f Dockerfile.sshd -t portloom-sshd:$(VERSION) .
 	docker build -f Dockerfile.docs -t portloom-docs:$(VERSION) .
 clean:
 	rm -rf bin coverage.out docs/.vitepress/dist docs/.vitepress/cache

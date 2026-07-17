@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/agent"
+	"github.com/lkhmm520/portloom/internal/managedssh"
 	"github.com/lkhmm520/portloom/internal/sshctl"
 )
 
@@ -48,7 +49,21 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	if err != nil {
 		return fmt.Errorf("create server client: %w", err)
 	}
-	reconciler := agent.NewReconciler(runner, agent.TCPHealthChecker{Timeout: cfg.HealthTimeout})
+	if err := agent.RegisterManagedSSHKeyWithConfig(ctx, client, agent.ManagedSSHRegistrationConfig{
+		PublicKeyPath: cfg.SSHPublicKeyFile, ReadyPath: cfg.ManagedSSHReadyPath, ReadyValue: cfg.ManagedSSHReadyNonce,
+		VerifyTransport: runner.EnsureMaster,
+	}); err != nil {
+		return fmt.Errorf("configure managed SSH access: %w", err)
+	}
+	reconcilerOptions := []agent.ReconcilerOption{}
+	if cfg.ManagedSSHIsolated {
+		bindAddress, err := managedssh.BindAddress(credentials.ClientID)
+		if err != nil {
+			return fmt.Errorf("derive managed SSH bind address: %w", err)
+		}
+		reconcilerOptions = append(reconcilerOptions, agent.WithRemoteBindHost(bindAddress))
+	}
+	reconciler := agent.NewReconciler(runner, agent.TCPHealthChecker{Timeout: cfg.HealthTimeout}, reconcilerOptions...)
 	syncer := agent.NewSyncer(client, reconciler)
 	err = syncer.Run(ctx, cfg.PollInterval, func(syncErr error) { log.Printf("agent synchronization failed: %v", syncErr) })
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

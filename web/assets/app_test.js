@@ -331,20 +331,69 @@ test("TCP automatic port exposure is localized", () => {
   assert.equal(build("en")({ protocol: "tcp", public_port: 0 }), "TCP: auto");
 });
 
-test("narrow sticky headers use compact localized context actions", () => {
+test("narrow sticky headers keep one accessible name and update both visual labels", () => {
   const css = fs.readFileSync(path.join(root, "web/assets/app.css"), "utf8");
   const source = app.match(/function updateContextAction\(\)[\s\S]*?\n  }/)?.[0] || "";
   assert.ok(source, "updateContextAction function exists");
-  const button = { hidden: true, dataset: {}, textContent: "" };
+  const full = { textContent: "" };
+  const short = { textContent: "" };
+  const attributes = {};
+  const button = {
+    hidden: true,
+    dataset: {},
+    querySelector: selector => selector === ".context-action-full" ? full : short,
+    setAttribute: (name, value) => { attributes[name] = value; }
+  };
+  let locale = "en";
+  const translations = {
+    en: { "context.addRoute": "Add HTTP route", "context.addRouteShort": "Add route" },
+    "zh-CN": { "context.addRoute": "添加 HTTP 路由", "context.addRouteShort": "添加路由" }
+  };
   const update = Function("state", "$", "t", `"use strict"; ${source}; return updateContextAction;`)(
     { view: "routes" },
     () => button,
-    key => ({ "context.addRoute": "Add HTTP route", "context.addRouteShort": "Add route" })[key] || key
+    key => translations[locale][key] || key
   );
+
   update();
-  assert.equal(button.textContent, "Add HTTP route");
-  assert.equal(button.dataset.shortLabel, "Add route");
-  assert.match(css, /@media \(max-width: 520px\)[\s\S]*#context-action-button::after\s*\{[^}]*content:\s*attr\(data-short-label\)/);
+  assert.equal(full.textContent, "Add HTTP route");
+  assert.equal(short.textContent, "Add route");
+  assert.equal(attributes["aria-label"], "Add HTTP route");
+  locale = "zh-CN";
+  update();
+  assert.equal(full.textContent, "添加 HTTP 路由");
+  assert.equal(short.textContent, "添加路由");
+  assert.equal(attributes["aria-label"], "添加 HTTP 路由");
+
+  assert.match(html, /id="context-action-button"[\s\S]*context-action-full[^>]*aria-hidden="true"[\s\S]*context-action-short[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(css, /#context-action-button::after/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.topbar-title\s*\{[^}]*flex-shrink:\s*0/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.topbar \.language-toggle\s*\{[^}]*min-width:\s*0/);
+});
+
+test("refresh loading state preserves compact accessible label nodes", () => {
+  const source = app.match(/function setLoading\(loading\)[\s\S]*?\n  }/)?.[0] || "";
+  assert.ok(source, "setLoading function exists");
+  const full = { textContent: "" };
+  const attributes = {};
+  const button = {
+    disabled: false,
+    querySelector: () => full,
+    setAttribute: (name, value) => { attributes[name] = value; }
+  };
+  const state = {};
+  const setLoading = Function("state", "$", "t", `"use strict"; ${source}; return setLoading;`)(
+    state,
+    () => button,
+    key => ({ "common.refresh": "Refresh", "common.refreshing": "Refreshing…" })[key] || key
+  );
+  setLoading(true);
+  assert.equal(button.disabled, true);
+  assert.equal(full.textContent, "Refreshing…");
+  assert.equal(attributes["aria-label"], "Refreshing…");
+  setLoading(false);
+  assert.equal(full.textContent, "Refresh");
+  assert.equal(attributes["aria-label"], "Refresh");
 });
 
 test("each module uses one sticky title and action row", () => {

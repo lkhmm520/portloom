@@ -88,6 +88,7 @@ main { min-height: 100vh; margin-left: 238px; padding: 0 clamp(1rem, 3vw, 2.7rem
 .topbar { position: sticky; z-index: 20; top: 0; display: flex; min-height: 94px; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.7rem; padding: 1.05rem 0; border-bottom: 1px solid rgb(36 52 72 / 82%); background: rgb(8 13 20 / 88%); backdrop-filter: blur(18px); }
 .topbar-title { min-width: 0; }
 .topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; }
+.context-action-short, .refresh-short { display: none; }
 .topbar time { color: var(--muted); font-size: .7rem; }
 .notice { margin: -1rem 0 1.25rem; padding: .75rem 1rem; border: 1px solid var(--border-bright); border-radius: 10px; background: var(--surface-2); font-size: .82rem; }
 .notice.error { border-color: #71323a; color: #ffb5b5; }
@@ -206,8 +207,15 @@ dialog::backdrop { background: rgb(2 6 11 / 78%); backdrop-filter: blur(4px); }
   .form-grid .span-2 { grid-column: auto; }
 }
 @media (max-width: 520px) {
-  #context-action-button { font-size: 0; white-space: nowrap; }
-  #context-action-button::after { content: attr(data-short-label); font-size: .72rem; }
+  .topbar { gap: .45rem; }
+  .topbar-title { flex-shrink: 0; }
+  .topbar-title h1 { white-space: nowrap; }
+  .topbar-actions { min-width: 0; gap: .25rem; }
+  .topbar .language-toggle { min-width: 0; padding-right: .42rem; padding-left: .42rem; }
+  .context-action-full, .refresh-full { display: none; }
+  .context-action-short, .refresh-short { display: inline; }
+  #refresh-button { width: 36px; min-width: 36px; padding: 0; }
+  #context-action-button { padding-right: .55rem; padding-left: .55rem; white-space: nowrap; }
 }
 
 .command-field { align-items: flex-start; }

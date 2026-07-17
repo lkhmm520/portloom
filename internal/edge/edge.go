@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
 )
@@ -16,6 +17,11 @@ import (
 type HTTPDomainSource interface {
 	HTTPDomainEnabled(context.Context, string) (bool, error)
 }
+
+const (
+	managementRequestTimeout = 30 * time.Second
+	managementMaxBodyBytes   = 1 << 20
+)
 
 // NewRouter dispatches the configured management hostname to control and every
 // other hostname to gateway. Gateway remains responsible for checking that an
@@ -30,6 +36,24 @@ func NewRouter(publicHost string, control, gateway http.Handler) (http.Handler, 
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if domain.NormalizeHost(r.Host) == publicHost {
+			// Gateway routes may stream for much longer, so the outer edge server
+			// has no global body/write deadline. Bound only management traffic
+			// here, after Host dispatch and before an API handler reads the body.
+			deadline := time.Now().Add(managementRequestTimeout)
+			controller := http.NewResponseController(w)
+			if err := controller.SetReadDeadline(deadline); err != nil {
+				http.Error(w, "management edge unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := controller.SetWriteDeadline(deadline); err != nil {
+				http.Error(w, "management edge unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if r.ContentLength > managementMaxBodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, managementMaxBodyBytes)
 			control.ServeHTTP(w, r)
 			return
 		}

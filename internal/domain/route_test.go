@@ -24,6 +24,25 @@ func TestRouteValidateRejectsMissingHTTPDomain(t *testing.T) {
 	}
 }
 
+func TestRouteValidateRejectsNonPublicHTTPDomain(t *testing.T) {
+	for _, candidate := range []string{
+		"console.example.com:443",
+		"127.0.0.1",
+		"127.1",
+		"2130706433",
+		"localhost",
+		"service.123",
+	} {
+		t.Run(candidate, func(t *testing.T) {
+			r := validRoute()
+			r.Domain = candidate
+			if err := r.Validate(); err == nil {
+				t.Fatalf("HTTP route domain %q was accepted", candidate)
+			}
+		})
+	}
+}
+
 func TestRouteValidateRejectsUnsafeTarget(t *testing.T) {
 	r := validRoute()
 	r.LocalHost = "127.0.0.1;rm -rf /"

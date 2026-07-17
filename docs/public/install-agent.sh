@@ -67,6 +67,7 @@ chmod 0600 "$home/.install.lock"
 flock -n 9 || { echo "another Agent installation is already running in $home" >&2; exit 1; }
 # Prevent long-running Docker children from keeping the installer lock after this shell exits.
 docker() { command docker "$@" 9>&-; }
+docker_run() { docker run --pull=never "$@"; }
 env_value() {
   local wanted=$1 key value
   [ -f "$home/.env" ] || return 1
@@ -75,10 +76,26 @@ env_value() {
   done < "$home/.env"
   return 1
 }
+valid_image_id() { [[ "${1:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; }
+image_id_for_ref() {
+  local resolved
+  resolved=$(docker image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 1
+  valid_image_id "$resolved" || return 1
+  printf '%s' "$resolved"
+}
+set_env_value() {
+  local wanted=$1 value=$2 key current tmp="$home/.env.next"
+  while IFS='=' read -r key current; do
+    [ "$key" = "$wanted" ] || printf '%s=%s\n' "$key" "$current"
+  done < "$home/.env" > "$tmp"
+  printf '%s=%s\n' "$wanted" "$value" >> "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$home/.env"
+}
 wait_ready() {
   local ready_image=$1 expected_nonce=$2 observed
   for _ in $(seq 1 "$ready_attempts"); do
-    observed=$(docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /bin/cat "$ready_image" /data/managed-ssh.ready 2>/dev/null || true) 9>&-
+    observed=$(docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /bin/cat "$ready_image" /data/managed-ssh.ready 2>/dev/null || true) 9>&-
     [ "$observed" = "$expected_nonce" ] && return 0
     sleep 1
   done
@@ -101,11 +118,11 @@ rotate_ready_nonce() {
 }
 remove_ready() {
   local ready_image=$1
-  docker run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$ready_image" -f /data/managed-ssh.ready
+  docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$ready_image" -f /data/managed-ssh.ready
 }
 write_known_hosts() {
   local key_image=$1
-  docker run --rm --user 65532:65532 -e HOST_LABEL="$host_label" -e HOST_KEY="$ssh_host_key" \
+  docker_run --rm --user 65532:65532 -e HOST_LABEL="$host_label" -e HOST_KEY="$ssh_host_key" \
     -v "$home/data:/data" --entrypoint /bin/sh "$key_image" -c 'umask 077; mkdir -p /data/ssh; printf "%s %s\n" "$HOST_LABEL" "$HOST_KEY" > /data/ssh/known_hosts.next; mv /data/ssh/known_hosts.next /data/ssh/known_hosts'
 }
 scrub_enrollment_token() {
@@ -119,7 +136,7 @@ write_agent_compose() {
 name: portloom-agent
 services:
   agent:
-    image: ${PORTLOOM_AGENT_IMAGE}
+    image: ${PORTLOOM_AGENT_IMAGE_ID}
     container_name: portloom-agent
     restart: unless-stopped
     network_mode: host
@@ -149,27 +166,49 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
       echo 'existing Agent state does not match this install command; choose the original --home or a new --home' >&2
       exit 1
     }
-  [ -f "$home/compose.yml" ] || write_agent_compose
   existing_image=$(env_value PORTLOOM_AGENT_IMAGE || true)
+  existing_image_id=$(env_value PORTLOOM_AGENT_IMAGE_ID || true)
   [ -n "$existing_image" ] || { echo 'existing Agent image is missing from .env' >&2; exit 1; }
-  if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then docker pull "$existing_image" >/dev/null; fi
-  if docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$existing_image" -L /data/agent.json; then
+  [ "$existing_image" = "$image" ] || { echo 'existing Agent image does not match this install command; use the original --version' >&2; exit 1; }
+  if [ -n "$existing_image_id" ] && ! valid_image_id "$existing_image_id"; then
+    echo 'existing Agent immutable image identity is invalid' >&2
+    exit 1
+  fi
+  running_identity=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ .Image }}|{{ .State.Running }}' portloom-agent 2>/dev/null || true)
+  recovery_image=""
+  if [ -n "$running_identity" ]; then
+    IFS='|' read -r running_home running_service recovery_image running_state trailing_identity <<< "$running_identity"
+    if [ -n "$trailing_identity" ] || [ "$running_home" != "$home" ] || [ "$running_service" != agent ] || ! valid_image_id "$recovery_image"; then
+      echo 'running Agent identity does not match this install directory' >&2
+      exit 1
+    fi
+    [ "$running_state" = true ] || { echo 'running Agent container is not active; start the original container or restore its immutable image ID before rerunning' >&2; exit 1; }
+    if [ -n "$existing_image_id" ] && [ "$existing_image_id" != "$recovery_image" ]; then
+      echo 'running Agent image does not match the persisted immutable image identity' >&2
+      exit 1
+    fi
+  fi
+  [ -n "$recovery_image" ] || recovery_image=$existing_image_id
+  valid_image_id "$recovery_image" || { echo 'immutable Agent image identity is unavailable; restore the original container or image ID before recovery' >&2; exit 1; }
+  set_env_value PORTLOOM_AGENT_IMAGE_ID "$recovery_image"
+  write_agent_compose
+  if docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$recovery_image" -L /data/agent.json; then
     echo 'refusing to recover from a symlinked agent.json' >&2
     exit 1
   fi
-  write_known_hosts "$existing_image"
+  write_known_hosts "$recovery_image"
   rotate_ready_nonce
-  remove_ready "$existing_image"
-  (cd "$home" && PORTLOOM_AGENT_IMAGE="$existing_image" docker compose --env-file .env -f compose.yml up -d --force-recreate) 9>&-
-  if ! wait_ready "$existing_image" "$ready_nonce"; then
+  remove_ready "$recovery_image"
+  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  if ! wait_ready "$recovery_image" "$ready_nonce"; then
     echo 'Existing Agent has not established managed SSH within 60 seconds; fix connectivity and rerun the same command' >&2
     exit 1
   fi
   scrub_enrollment_token
   rotate_ready_nonce
-  remove_ready "$existing_image"
-  (cd "$home" && PORTLOOM_AGENT_IMAGE="$existing_image" docker compose --env-file .env -f compose.yml up -d --force-recreate) 9>&-
-  if ! wait_ready "$existing_image" "$ready_nonce"; then
+  remove_ready "$recovery_image"
+  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  if ! wait_ready "$recovery_image" "$ready_nonce"; then
     echo 'Agent credentials were recovered, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
     exit 1
   fi
@@ -177,26 +216,28 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   exit 0
 fi
 if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then docker pull "$image" >/dev/null; fi
+image_ref=$image
+image=$(image_id_for_ref "$image_ref") || { echo "unable to resolve immutable Agent image ID for $image_ref" >&2; exit 1; }
 if [ -d "$home/data" ]; then
-  if docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -e /data/agent.json ||
-     docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -e /data/agent.json.pending; then
+  if docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -e /data/agent.json ||
+     docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -e /data/agent.json.pending; then
     echo 'Agent credentials exist without .env and compose.yml; manual recovery is required to avoid overwriting identity' >&2
     exit 1
   fi
 fi
 mkdir -p "$home/data/ssh"
-docker run --rm --user 0:0 -v "$home/data:/data" --entrypoint /bin/chown "$image" -R 65532:65532 /data
-docker run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$image" -f /data/managed-ssh.ready
-if ! docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -s /data/ssh/id_ed25519; then
-  docker run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$image" -f /data/ssh/id_ed25519.pub
-  docker run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /usr/bin/ssh-keygen "$image" \
+docker_run --rm --user 0:0 -v "$home/data:/data" --entrypoint /bin/chown "$image" -R 65532:65532 /data
+docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$image" -f /data/managed-ssh.ready
+if ! docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -s /data/ssh/id_ed25519; then
+  docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$image" -f /data/ssh/id_ed25519.pub
+  docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /usr/bin/ssh-keygen "$image" \
     -q -t ed25519 -a 64 -N '' -C "portloom-agent:$name" -f /data/ssh/id_ed25519
-elif ! docker run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -s /data/ssh/id_ed25519.pub; then
-  docker run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/sh "$image" -c \
+elif ! docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$image" -s /data/ssh/id_ed25519.pub; then
+  docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/sh "$image" -c \
     'umask 077; ssh-keygen -y -f /data/ssh/id_ed25519 > /data/ssh/id_ed25519.pub.next; mv /data/ssh/id_ed25519.pub.next /data/ssh/id_ed25519.pub'
 fi
 {
-  printf 'PORTLOOM_AGENT_IMAGE=%s\nPORTLOOM_SSH_HOST_KEY_SHA256=%s\n' "$image" "$host_key_sha256"
+  printf 'PORTLOOM_AGENT_IMAGE=%s\nPORTLOOM_AGENT_IMAGE_ID=%s\nPORTLOOM_SSH_HOST_KEY_SHA256=%s\n' "$image_ref" "$image" "$host_key_sha256"
   printf 'TM_SERVER_URL=%s\nTM_CLIENT_NAME=%s\nTM_ENROLLMENT_TOKEN=%s\n' "$server_url" "$name" "$token"
   printf 'TM_SSH_HOST=%s\nTM_SSH_PORT=%s\nTM_SSH_USER=tunnel\n' "$ssh_host" "$ssh_port"
   printf 'TM_SSH_IDENTITY_FILE=/data/ssh/id_ed25519\nTM_SSH_PUBLIC_KEY_FILE=/data/ssh/id_ed25519.pub\nTM_SSH_KNOWN_HOSTS_FILE=/data/ssh/known_hosts\n'
@@ -209,7 +250,7 @@ write_known_hosts "$image"
 write_agent_compose
 rotate_ready_nonce
 remove_ready "$image"
-(cd "$home" && PORTLOOM_AGENT_IMAGE="$image" docker compose --env-file .env -f compose.yml up -d) 9>&-
+(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --pull never) 9>&-
 if ! wait_ready "$image" "$ready_nonce"; then
   echo 'Agent did not establish managed SSH within 60 seconds; its consumed credentials were saved and rerunning the same command will resume safely' >&2
   exit 1
@@ -217,7 +258,7 @@ fi
 scrub_enrollment_token
 rotate_ready_nonce
 remove_ready "$image"
-(cd "$home" && PORTLOOM_AGENT_IMAGE="$image" docker compose --env-file .env -f compose.yml up -d --force-recreate) 9>&-
+(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
 if ! wait_ready "$image" "$ready_nonce"; then
   echo 'Agent enrolled, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
   exit 1

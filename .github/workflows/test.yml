@@ -64,6 +64,8 @@ jobs:
           docker compose --env-file examples/server.env -f examples/docker-compose.server.yml config --quiet
           docker compose --env-file examples/agent.env -f examples/docker-compose.agent.yml config --quiet
           docker compose -f examples/docker-compose.dual-agent.yml config --quiet
+      - name: Verify release workflow contracts
+        run: python3 tests/release_workflows_test.py
       - name: Build Server image
         run: docker build --build-arg VERSION="${GITHUB_SHA::12}" --build-arg COMMIT="${GITHUB_SHA}" --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f Dockerfile.server -t portloom-server:test .
       - name: Build Agent image

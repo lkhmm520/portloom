@@ -3,10 +3,12 @@ package edge
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type routeSource struct {
@@ -40,12 +42,118 @@ func TestRouterSendsManagementHostToControlAndRouteHostToGateway(t *testing.T) {
 		t.Run(test.host, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "https://"+test.host+"/", nil)
 			req.Host = test.host
-			res := httptest.NewRecorder()
+			res := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 			handler.ServeHTTP(res, req)
 			if res.Code != test.want {
 				t.Fatalf("status=%d want=%d", res.Code, test.want)
 			}
 		})
+	}
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	readDeadline  time.Time
+	writeDeadline time.Time
+}
+
+func (r *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.readDeadline = deadline
+	return nil
+}
+
+func (r *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.writeDeadline = deadline
+	return nil
+}
+
+func TestRouterBoundsPublicManagementRequests(t *testing.T) {
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if recorder.readDeadline.IsZero() || recorder.writeDeadline.IsZero() {
+			t.Fatal("management deadlines were not installed before dispatch")
+		}
+		if remaining := time.Until(recorder.readDeadline); remaining <= 0 || remaining > managementRequestTimeout {
+			t.Fatalf("read deadline remaining = %v", remaining)
+		}
+		_, err := io.Copy(io.Discard, r.Body)
+		var maxErr *http.MaxBytesError
+		if !errors.As(err, &maxErr) || maxErr.Limit != managementMaxBodyBytes {
+			t.Fatalf("oversized body error = %v", err)
+		}
+		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+	})
+	router, err := NewRouter("console.example.com", control, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://console.example.com/api/v1/routes", strings.NewReader(strings.Repeat("x", managementMaxBodyBytes+1)))
+	req.ContentLength = -1
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func TestRouterRejectsDeclaredOversizedManagementBodyBeforeControl(t *testing.T) {
+	called := false
+	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "https://console.example.com/api/v1/routes", strings.NewReader("small fixture"))
+	req.ContentLength = managementMaxBodyBytes + 1
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("status=%d control_called=%t", recorder.Code, called)
+	}
+}
+
+func TestRouterManagementDeadlinesWorkOnHTTP1AndHTTP2(t *testing.T) {
+	router, err := NewRouter("console.example.com", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enableHTTP2 := range []bool{false, true} {
+		t.Run(map[bool]string{false: "http1", true: "http2"}[enableHTTP2], func(t *testing.T) {
+			server := httptest.NewUnstartedServer(router)
+			server.EnableHTTP2 = enableHTTP2
+			server.StartTLS()
+			defer server.Close()
+			req, err := http.NewRequest(http.MethodGet, server.URL+"/healthz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = "console.example.com"
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("status=%d protocol=%s", resp.StatusCode, resp.Proto)
+			}
+			if enableHTTP2 && resp.ProtoMajor != 2 {
+				t.Fatalf("expected HTTP/2, got %s", resp.Proto)
+			}
+		})
+	}
+}
+
+func TestRouterFailsClosedWithoutManagementDeadlineSupport(t *testing.T) {
+	called := false
+	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "https://console.example.com/", nil)
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusServiceUnavailable || called {
+		t.Fatalf("status=%d control_called=%t", recorder.Code, called)
 	}
 }
 

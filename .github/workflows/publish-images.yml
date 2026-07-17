@@ -2,7 +2,6 @@ name: publish-images
 on:
   push:
     tags: ['v*.*.*']
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,63 +26,96 @@ jobs:
         include:
           - component: server
             image: ghcr.io/lkhmm520/portloom-server
+            repository: lkhmm520/portloom-server
             dockerfile: Dockerfile.server
           - component: agent
             image: ghcr.io/lkhmm520/portloom-agent
+            repository: lkhmm520/portloom-agent
             dockerfile: Dockerfile.agent
           - component: sshd
             image: ghcr.io/lkhmm520/portloom-sshd
+            repository: lkhmm520/portloom-sshd
             dockerfile: Dockerfile.sshd
           - component: docs
             image: ghcr.io/lkhmm520/portloom-docs
+            repository: lkhmm520/portloom-docs
             dockerfile: Dockerfile.docs
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Validate and classify release tag
+        with:
+          fetch-depth: 0
+      - name: Validate exact release tag
         id: release
         shell: bash
         run: |
-          stable=false
-          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
-            if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-              echo "Invalid semantic version tag: ${GITHUB_REF_NAME}" >&2
-              exit 1
-            fi
-            if [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              stable=true
-            fi
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$ ]]; then
+            echo "Invalid OCI-compatible semantic version tag: ${GITHUB_REF_NAME}" >&2
+            exit 1
           fi
-          echo "stable=${stable}" >> "$GITHUB_OUTPUT"
-          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          fi
+          revision=$(git rev-parse HEAD)
+          [ "$revision" = "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" ] || {
+            echo "checkout does not match ${GITHUB_REF_NAME}" >&2
+            exit 1
+          }
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Check immutable exact tag
+        id: existing
+        env:
+          IMAGE: ${{ matrix.image }}
+          REPOSITORY: ${{ matrix.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          token=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            "https://ghcr.io/token?scope=repository:${REPOSITORY}:pull" | jq -r .token)
+          [ -n "$token" ] && [ "$token" != null ] || { echo 'GHCR returned no pull token' >&2; exit 1; }
+          printf -v registry_auth 'Authorization: Bearer %s' "$token"
+          status=$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output /tmp/manifest-response --write-out '%{http_code}' \
+            -H "$registry_auth" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/${REPOSITORY}/manifests/${VERSION}")
+          case "$status" in
+            200)
+              for arch in amd64 arm64; do
+                docker pull --platform "linux/$arch" "${IMAGE}:${VERSION}" >/dev/null
+                revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${IMAGE}:${VERSION}")
+                image_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${IMAGE}:${VERSION}")
+                [ "$revision" = "$EXPECTED_REVISION" ] || { echo "refusing to overwrite ${IMAGE}:${VERSION}: linux/$arch revision $revision != $EXPECTED_REVISION" >&2; exit 1; }
+                [ "$image_version" = "$VERSION" ] || { echo "refusing to reuse ${IMAGE}:${VERSION}: linux/$arch version $image_version != $VERSION" >&2; exit 1; }
+              done
+              echo 'exists=true' >> "$GITHUB_OUTPUT"
+              ;;
+            404) echo 'exists=false' >> "$GITHUB_OUTPUT";;
+            *) echo "GHCR manifest probe failed with HTTP $status" >&2; cat /tmp/manifest-response >&2; exit 1;;
+          esac
       - name: Log in to GHCR
+        if: steps.existing.outputs.exists != 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Capture build date
+        if: steps.existing.outputs.exists != 'true'
         id: build-date
         run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Image metadata
+        if: steps.existing.outputs.exists != 'true'
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ matrix.image }}
           flavor: latest=false
-          tags: |
-            type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' }}
-            type=semver,pattern={{major}},enable=${{ github.event_name == 'push' }}
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}
-            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
-      - name: Build and push
+          tags: type=raw,value=${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.release.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+      - name: Build and push exact immutable tag
+        if: steps.existing.outputs.exists != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -94,62 +126,66 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.release.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.release.outputs.revision }}
             BUILD_DATE=${{ steps.build-date.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
-  verify-public-release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  verify-published-release:
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Verify images are anonymously readable
+      - name: Verify exact images, revisions, and both target platforms
         run: |
           version="${GITHUB_REF_NAME#v}"
+          revision=$(git rev-parse HEAD)
           for image in server agent sshd docs; do
-            docker buildx imagetools inspect "ghcr.io/lkhmm520/portloom-${image}:${version}" >/dev/null
+            ref="ghcr.io/lkhmm520/portloom-${image}:${version}"
+            manifest=$(docker buildx imagetools inspect --raw "$ref")
+            for arch in amd64 arm64; do
+              jq -e --arg arch "$arch" \
+                'any(.manifests[]; .platform.os == "linux" and .platform.architecture == $arch)' \
+                <<<"$manifest" >/dev/null || { echo "$ref is missing linux/$arch" >&2; exit 1; }
+            done
+            for arch in amd64 arm64; do
+              docker pull --platform "linux/$arch" "$ref" >/dev/null
+              actual_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+              actual_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$ref")
+              [ "$actual_revision" = "$revision" ] || { echo "$ref linux/$arch revision $actual_revision != $revision" >&2; exit 1; }
+              [ "$actual_version" = "$version" ] || { echo "$ref linux/$arch version $actual_version != $version" >&2; exit 1; }
+            done
+          done
+      - name: Verify installers embedded in the published docs image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docs_ref="ghcr.io/lkhmm520/portloom-docs:${version}"
+          docker pull --platform linux/amd64 "$docs_ref" >/dev/null
+          container=$(docker create --platform linux/amd64 "$docs_ref")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          for script in install-server.sh install-agent.sh; do
+            docker cp "$container:/usr/share/nginx/html/${script}" "/tmp/${script}"
+            cmp --silent "docs/public/${script}" "/tmp/${script}" || { echo "published docs image contains a stale ${script}" >&2; exit 1; }
           done
       - name: Verify Server reports the exact published Agent tag
         run: |
           version="${GITHUB_REF_NAME#v}"
           verify_token=$(openssl rand -hex 16)
-          docker run -d --name portloom-release-version \
+          docker run --platform linux/amd64 -d --name portloom-release-version \
             -e TM_LISTEN_ADDR=0.0.0.0:8080 -e TM_GATEWAY_ADDR=127.0.0.1:8081 \
             -e TM_DATABASE_PATH=/data/portloom.db -e TM_WEB_DIR=/app/web \
             -e TM_ADMIN_TOKEN="$verify_token" \
             -p 127.0.0.1:18080:8080 "ghcr.io/lkhmm520/portloom-server:${version}"
           trap 'docker rm -f portloom-release-version >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 30); do
+            printf -v api_auth 'Authorization: Bearer %s' "$verify_token"
             reported=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-              -H "Authorization: Bearer $verify_token" \
+              -H "$api_auth" \
               http://127.0.0.1:18080/api/v1/system | jq -r .version 2>/dev/null || true)
             [ "$reported" = "$version" ] && break
             [ "$attempt" = 30 ] && { echo "reported version '$reported', expected '$version'" >&2; exit 1; }
             sleep 2
           done
           docker buildx imagetools inspect "ghcr.io/lkhmm520/portloom-agent:${reported}" >/dev/null
-      - name: Verify public installer scripts
-        run: |
-          for script in install-server.sh install-agent.sh; do
-            for attempt in $(seq 1 30); do
-              if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "https://docs.961121.xyz/${script}" >"/tmp/${script}"; then
-                if grep -q '^#!/usr/bin/env bash' "/tmp/${script}"; then
-                  expected_sha=$(sha256sum "docs/public/${script}" | cut -d ' ' -f 1)
-                  public_sha=$(sha256sum "/tmp/${script}" | cut -d ' ' -f 1)
-                  [ "$public_sha" = "$expected_sha" ] && break
-                  echo "installer digest not current yet: ${script}" >&2
-                else
-                  echo "installer content is not a Bash script yet: ${script}" >&2
-                fi
-              fi
-              if [ "$attempt" = 30 ]; then
-                echo "installer unavailable or stale: ${script}" >&2
-                exit 1
-              fi
-              sleep 10
-            done
-          done

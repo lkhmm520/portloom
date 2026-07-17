@@ -40,7 +40,7 @@ The certificate cache is `/data/certs` inside the container and `server-data/cer
 
 When upgrading a v0.2.x easy install that includes Caddy, do not overwrite Compose directly. Follow the explicit `--migrate-native-edge` procedure in [Backup, upgrade, and rollback](/en/operations/backup-upgrade).
 
-Operate it with `docker compose ps`, `docker compose logs --tail=100`, `docker compose pull`, and `docker compose up -d` from `~/.portloom/server`.
+Inspect it with `docker compose ps` and `docker compose logs --tail=100` from `~/.portloom/server`. Do not upgrade an easy install with `docker compose pull && docker compose up -d`; that bypasses candidate configuration, backups, HTTPS readiness, and automatic rollback. Use the pinned new-`--version` installer rerun described below.
 
 ## Internal host: Agent
 
@@ -53,7 +53,7 @@ Copy the generated command from **Add Agent** in the WebUI. It calls the public 
 ./install-agent.sh --help
 ```
 
-Use `--version` to pin a release in production. `latest` is convenient for a first trial, not unattended upgrades. For a v0.3 native-edge easy install, rerun the installer with the same domain and ports plus a new pinned `--version` whose image reference differs from the current one; an idempotent rerun does not pull an unchanged mutable tag such as `latest`; it preserves the administrator token and persistent data, updates the Server/sshd images, and re-verifies HTTPS.
+Use `--version` to pin a release in production. `latest` is convenient for a first trial, not unattended upgrades. The installer persists the resolved immutable Server/sshd image IDs in `.env`, and Compose uses only those IDs; an idempotent rerun neither pulls an unchanged tag nor silently follows a locally moved `latest`. The first rerun of an older install migrates IDs from matching running containers; it fails closed when neither a container nor a persisted ID is available. To upgrade, pass a different pinned `--version`; the installer preserves the administrator token and persistent data and re-verifies HTTPS.
 
 ## Build from source
 

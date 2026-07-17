@@ -253,6 +253,12 @@ func TestTLSCertificateAuthorizationAllowsOnlyConfiguredHTTPHosts(t *testing.T) 
 		{"unknown route", "/api/v1/tls/allow?domain=unknown.example.com&token=ask-secret", http.StatusForbidden},
 		{"wrong ask token", "/api/v1/tls/allow?domain=app.example.com&token=wrong", http.StatusUnauthorized},
 		{"empty domain", "/api/v1/tls/allow?domain=&token=ask-secret", http.StatusBadRequest},
+		{"domain with port", "/api/v1/tls/allow?domain=loom.example.com%3A443&token=ask-secret", http.StatusBadRequest},
+		{"IP domain", "/api/v1/tls/allow?domain=127.0.0.1&token=ask-secret", http.StatusBadRequest},
+		{"abbreviated IP domain", "/api/v1/tls/allow?domain=127.1&token=ask-secret", http.StatusBadRequest},
+		{"integer IP domain", "/api/v1/tls/allow?domain=2130706433&token=ask-secret", http.StatusBadRequest},
+		{"single-label domain", "/api/v1/tls/allow?domain=localhost&token=ask-secret", http.StatusBadRequest},
+		{"numeric TLD domain", "/api/v1/tls/allow?domain=service.123&token=ask-secret", http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := performJSON(t, handler, http.MethodGet, test.path, nil, "")

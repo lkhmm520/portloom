@@ -26,11 +26,11 @@ Server requires the `NET_BIND_SERVICE` capability to bind 80/443 as a non-root u
 ./install-server.sh --domain portloom.example.com --version 0.3.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
-docker compose up -d
 docker compose ps
+docker compose logs --tail=100 server
 ```
 
-Keep the Compose project name and volume paths during upgrades. Do not recreate the database service with ad hoc `docker run` commands.
+The installer has already started and verified the services; do not follow it with a bare `docker compose up`, which bypasses readiness and rollback protection. Keep the Compose project name and volume paths stable. Never recreate the database service with an ad hoc `docker run`.
 
 ## Managed SSH boundary
 

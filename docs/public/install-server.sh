@@ -75,11 +75,48 @@ chmod 0755 "$home/ssh-hostkeys"
 chmod 0700 "$home/server-data" "$home/ssh-auth" 2>/dev/null || true
 random_token() { if command -v openssl >/dev/null; then openssl rand -hex 32; else dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'; fi; }
 env_value() { local wanted=$1 key value; [ -f "$home/.env" ] || return 1; while IFS='=' read -r key value; do [ "$key" = "$wanted" ] && { printf '%s' "$value"; return 0; }; done < "$home/.env"; return 1; }
+valid_image_id() { [[ "${1:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; }
+image_id_for_ref() {
+  local resolved
+  resolved=$(docker image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 1
+  valid_image_id "$resolved" || return 1
+  printf '%s' "$resolved"
+}
+resolve_existing_image_id() {
+  local container=$1 service=$2 persisted=$3 identity running_id="" running_home running_service running_state trailing
+  if [ -n "$persisted" ] && ! valid_image_id "$persisted"; then
+    echo "persisted immutable image identity for $service is invalid" >&2
+    return 1
+  fi
+  identity=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ .Image }}|{{ .State.Running }}' "$container" 2>/dev/null || true)
+  if [ -n "$identity" ]; then
+    IFS='|' read -r running_home running_service running_id running_state trailing <<< "$identity"
+    if [ -n "$trailing" ] || [ "$running_home" != "$home" ] || [ "$running_service" != "$service" ] || ! valid_image_id "$running_id"; then
+      echo "running $service identity does not match this install directory" >&2
+      return 1
+    fi
+    if [ "$running_state" != true ]; then
+      echo "running $service container is not active; start the original container or restore its immutable image ID before rerunning" >&2
+      return 1
+    fi
+    if [ -n "$persisted" ] && [ "$persisted" != "$running_id" ]; then
+      echo "running $service image does not match the persisted immutable image identity" >&2
+      return 1
+    fi
+  fi
+  [ -n "$running_id" ] || running_id=$persisted
+  valid_image_id "$running_id" || { echo "immutable $service image identity is unavailable; restore the original container or image ID before rerunning" >&2; return 1; }
+  printf '%s' "$running_id"
+}
 legacy_migration=false
 native_upgrade=false
+previous_server_image_id=""
+previous_sshd_image_id=""
 if [ -f "$home/.env" ]; then
   existing_server_image=$(env_value PORTLOOM_SERVER_IMAGE || true)
   existing_sshd_image=$(env_value PORTLOOM_SSHD_IMAGE || true)
+  existing_server_image_id=$(env_value PORTLOOM_SERVER_IMAGE_ID || true)
+  existing_sshd_image_id=$(env_value PORTLOOM_SSHD_IMAGE_ID || true)
   existing_http_port=$(env_value PORTLOOM_HTTP_PORT || true)
   existing_https_port=$(env_value PORTLOOM_HTTPS_PORT || true)
   legacy_http_port=$(env_value PORTLOOM_CADDY_HTTP_PORT || true)
@@ -103,6 +140,8 @@ if [ -f "$home/.env" ]; then
       echo 'legacy migration target must use a Server image reference different from the existing deployment; pass a pinned v0.3 --version' >&2
       exit 1
     }
+    previous_server_image_id=$(resolve_existing_image_id portloom-server server "$existing_server_image_id") || exit 1
+    previous_sshd_image_id=$(resolve_existing_image_id portloom-sshd sshd "$existing_sshd_image_id") || exit 1
     [ "$sshd_image" != "$existing_sshd_image" ] || pull_sshd=false
     backup_dir="$home/migration-backup-v0.3.0"
     backup_next="$home/.migration-backup-v0.3.0.next"
@@ -122,6 +161,8 @@ if [ -f "$home/.env" ]; then
       echo 'existing Server configuration does not match this install command; use the original domain and ports or a new --home' >&2
       exit 1
     }
+    previous_server_image_id=$(resolve_existing_image_id portloom-server server "$existing_server_image_id") || exit 1
+    previous_sshd_image_id=$(resolve_existing_image_id portloom-sshd sshd "$existing_sshd_image_id") || exit 1
     [ "$existing_server_image" != "$server_image" ] || pull_server=false
     [ "$existing_sshd_image" != "$sshd_image" ] || pull_sshd=false
     if [ "$pull_server" = true ] || [ "$pull_sshd" = true ]; then
@@ -148,7 +189,17 @@ if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then
   [ "$pull_server" = false ] || docker pull "$server_image" >/dev/null
   [ "$pull_sshd" = false ] || docker pull "$sshd_image" >/dev/null
 fi
-docker run --rm --user 0:0 -v "$home/server-data:/server-data" -v "$home/ssh-auth:/ssh-auth" -v "$home/ssh-hostkeys:/ssh-hostkeys" --entrypoint /bin/sh "$server_image" -c 'umask 077; mkdir -p /server-data/certs; touch /ssh-auth/authorized_keys; chown -R 65532:65532 /server-data /ssh-auth; chmod 0700 /server-data /server-data/certs /ssh-auth; chmod 0600 /ssh-auth/authorized_keys; chown -R 0:0 /ssh-hostkeys; chmod 0755 /ssh-hostkeys'
+if [ "$pull_server" = false ] && [ -n "$previous_server_image_id" ]; then
+  target_server_image_id=$previous_server_image_id
+else
+  target_server_image_id=$(image_id_for_ref "$server_image") || { echo "unable to resolve immutable Server image ID for $server_image" >&2; exit 1; }
+fi
+if [ "$pull_sshd" = false ] && [ -n "$previous_sshd_image_id" ]; then
+  target_sshd_image_id=$previous_sshd_image_id
+else
+  target_sshd_image_id=$(image_id_for_ref "$sshd_image") || { echo "unable to resolve immutable SSHD image ID for $sshd_image" >&2; exit 1; }
+fi
+docker run --pull=never --rm --user 0:0 -v "$home/server-data:/server-data" -v "$home/ssh-auth:/ssh-auth" -v "$home/ssh-hostkeys:/ssh-hostkeys" --entrypoint /bin/sh "$target_server_image_id" -c 'umask 077; mkdir -p /server-data/certs; touch /ssh-auth/authorized_keys; chown -R 65532:65532 /server-data /ssh-auth; chmod 0700 /server-data /server-data/certs /ssh-auth; chmod 0600 /ssh-auth/authorized_keys; chown -R 0:0 /ssh-hostkeys; chmod 0755 /ssh-hostkeys'
 restore_legacy_files() {
   local source=$1 file
   for file in .env compose.yml Caddyfile; do cp -p "$source/$file" "$home/$file.restore" || return 1; done
@@ -170,7 +221,8 @@ verify_public_https() {
   return 1
 }
 printf '%s\n' \
-  "PORTLOOM_SERVER_IMAGE=$server_image" "PORTLOOM_SSHD_IMAGE=$sshd_image" "PORTLOOM_DOMAIN=$domain" \
+  "PORTLOOM_SERVER_IMAGE=$server_image" "PORTLOOM_SERVER_IMAGE_ID=$target_server_image_id" \
+  "PORTLOOM_SSHD_IMAGE=$sshd_image" "PORTLOOM_SSHD_IMAGE_ID=$target_sshd_image_id" "PORTLOOM_DOMAIN=$domain" \
   "PORTLOOM_WEB_PORT=$web_port" "PORTLOOM_SSH_PORT=$ssh_port" "PORTLOOM_GATEWAY_PORT=$gateway_port" \
   "PORTLOOM_HTTP_PORT=$edge_http_port" "PORTLOOM_HTTPS_PORT=$edge_https_port" "TM_ADMIN_TOKEN=$admin_token" > "$home/.env.next"
 chmod 600 "$home/.env.next"
@@ -178,7 +230,7 @@ cat > "$home/compose.yml.next" <<'EOF'
 name: portloom
 services:
   sshd:
-    image: ${PORTLOOM_SSHD_IMAGE}
+    image: ${PORTLOOM_SSHD_IMAGE_ID}
     container_name: portloom-sshd
     restart: unless-stopped
     network_mode: host
@@ -195,7 +247,7 @@ services:
     cap_drop: [ALL]
     cap_add: [SETUID, SETGID, SYS_CHROOT]
   server:
-    image: ${PORTLOOM_SERVER_IMAGE}
+    image: ${PORTLOOM_SERVER_IMAGE_ID}
     container_name: portloom-server
     restart: unless-stopped
     network_mode: host
@@ -268,7 +320,7 @@ if [ "$legacy_migration" = true ]; then
   (cd "$home" && docker compose --project-directory "$home" --env-file migration-backup-v0.3.0/.env -f migration-backup-v0.3.0/compose.yml stop caddy) 9>&- || activation_failed=true
 fi
 if [ "$activation_failed" = false ]; then
-  (cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE="$server_image" PORTLOOM_SSHD_IMAGE="$sshd_image" docker compose --env-file .env -f compose.yml up -d --remove-orphans) 9>&- || activation_failed=true
+  (cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE_ID="$target_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$target_sshd_image_id" docker compose --env-file .env -f compose.yml up -d --remove-orphans --pull never) 9>&- || activation_failed=true
 fi
 if [ "$activation_failed" = false ] && ! verify_public_https; then
   activation_failed=true
@@ -281,7 +333,7 @@ if [ "$activation_failed" = true ]; then
     (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml down --remove-orphans) 9>&- || rollback_failed=true
     if ! restore_legacy_files "$backup_dir"; then
       rollback_failed=true
-    elif ! (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml up -d) 9>&-; then
+    elif ! (cd "$home" && PORTLOOM_SERVER_IMAGE="$previous_server_image_id" PORTLOOM_SSHD_IMAGE="$previous_sshd_image_id" docker compose --project-directory "$home" --env-file .env -f compose.yml up -d --pull never) 9>&-; then
       rollback_failed=true
     elif ! verify_public_https; then
       rollback_failed=true
@@ -295,7 +347,7 @@ if [ "$activation_failed" = true ]; then
     (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml down --remove-orphans) 9>&- || rollback_failed=true
     if ! restore_native_files "$backup_dir"; then
       rollback_failed=true
-    elif ! (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml up -d) 9>&-; then
+    elif ! (cd "$home" && PORTLOOM_SERVER_IMAGE_ID="$previous_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$previous_sshd_image_id" docker compose --project-directory "$home" --env-file .env -f compose.yml up -d --pull never) 9>&-; then
       rollback_failed=true
     elif ! verify_public_https; then
       rollback_failed=true

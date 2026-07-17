@@ -24,7 +24,7 @@ Each Agent keeps one OpenSSH ControlMaster and applies route changes with `ssh -
 
 ## Public requests and certificates
 
-The native edge dispatches `TM_PUBLIC_HOST` to the control handler and other hostnames to the Gateway. The Gateway selects only enabled, converged HTTP routes, then proxies through a VPS loopback port and the SSH tunnel to the Agent's local target.
+The native edge dispatches `TM_PUBLIC_HOST` to the control handler and other hostnames to the Gateway. Public management requests have 30-second read/write deadlines and a 1 MiB body limit to prevent slow clients from holding connections; these limits apply only to the management host, so Gateway application routes can still stream for longer. The Gateway selects only enabled, converged HTTP routes, then proxies through a VPS loopback port and the SSH tunnel to the Agent's local target.
 
 Server uses autocert with ACME HTTP-01 on port 80 and persists certificates at `/data/certs`. Its HostPolicy authorizes only `TM_PUBLIC_HOST` and currently enabled HTTP route hostnames. Unknown names cannot trigger issuance, and port 80 redirects only names PortLoom owns. The container needs `NET_BIND_SERVICE` to bind 80/443.
 

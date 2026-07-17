@@ -4,7 +4,7 @@
 | --- | --- |
 | Name | Human-readable route name |
 | Client | Agent that carries the route |
-| Domain | Unique public hostname for HTTP |
+| Domain | Unique public DNS hostname; IPs, ports, single labels, and numeric final labels are rejected |
 | Local host/port | Target reachable from the Agent host |
 | Tunnel group | Metadata today; use separate Agents for isolation |
 | Enabled | Included in desired state, Gateway lookup, and native certificate authorization |
@@ -13,7 +13,7 @@ Agents use host networking, so `127.0.0.1` refers to the NAS host. A mapped host
 
 ## Publishing and safe changes
 
-Point the new hostname's A/AAAA record to the VPS, then enable the route. The native edge automatically adds the hostname to HTTPS authorization and obtains a certificate with ACME HTTP-01; no per-route Caddy or proxy edit is needed. Disabling the route removes future certificate authorization, while cached certificates remain under `/data/certs`.
+Point the new hostname's A/AAAA record to the VPS, then enable the route. The route API and certificate authorization use the same strict public-DNS validation, so values that cannot receive a certificate—such as IPs, names with ports, or `localhost`—are rejected before they are saved. The native edge automatically adds the hostname to HTTPS authorization and obtains a certificate with ACME HTTP-01; no per-route Caddy or proxy edit is needed. Disabling the route removes future certificate authorization, while cached certificates remain under `/data/certs`.
 
 Create and observe a route before switching an existing ingress, if any. Before deleting a route, restore its previous upstream. Validate Range, WebSocket, large-file, and long-lived request behavior when the application needs them.
 

@@ -278,7 +278,7 @@ test("README local server example uses absolute paths", () => {
 
 test("console defaults to complete Simplified Chinese and can persistently switch to English", () => {
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<script defer src="\/assets\/i18n\.js"><\/script>[\s\S]*<script defer src="\/assets\/app\.js"><\/script>/);
+  assert.match(html, /<script defer src="\/assets\/i18n\.js\?v=[^"]+"><\/script>[\s\S]*<script defer src="\/assets\/app\.js\?v=[^"]+"><\/script>/);
   assert.ok((html.match(/data-language-toggle/g) || []).length >= 2, "language switch is available before and after login");
 
   const i18nPath = path.join(root, "web/assets/i18n.js");
@@ -290,6 +290,10 @@ test("console defaults to complete Simplified Chinese and can persistently switc
   assert.equal(i18n.translate("zh-CN", "nav.dashboard"), "仪表盘");
   assert.equal(i18n.translate("en", "nav.dashboard"), "Dashboard");
   assert.deepEqual(Object.keys(i18n.messages["zh-CN"]).sort(), Object.keys(i18n.messages.en).sort(), "Chinese and English dictionaries expose the same keys");
+
+  const versionedAssets = [...html.matchAll(/(?:href|src)="\/assets\/(?:app\.css|i18n\.js|app\.js)\?v=([^"]+)"/g)].map(match => match[1]);
+  assert.equal(versionedAssets.length, 3, "all custom web assets use cache-busting versions");
+  assert.equal(new Set(versionedAssets).size, 1, "custom web assets share one release version");
 
   const keys = [...html.matchAll(/data-i18n(?:-(?:placeholder|aria-label|title|content))?="([^"]+)"/g)].map(match => match[1]);
   assert.ok(keys.includes("meta.description"), "content attributes are included in the static translation key audit");

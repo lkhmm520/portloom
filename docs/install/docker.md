@@ -50,9 +50,9 @@ ssh-auth/         由 Server 重建的 Agent 授权文件
 cd ~/.portloom/server
 docker compose ps
 docker compose logs --tail=100
-docker compose pull
-docker compose up -d
 ```
+
+不要用 `docker compose pull && docker compose up -d` 升级简易安装；它会绕过候选配置、备份、HTTPS readiness 与自动回滚。升级应使用下方固定新 `--version` 的安装器重跑流程。
 
 ## 内网主机：Agent
 
@@ -65,7 +65,7 @@ docker compose up -d
 ./install-agent.sh --help
 ```
 
-生产环境应使用 `--version` 固定发布标签。`latest` 适合首次体验，不适合无人值守升级。已使用 v0.3 原生入口的简易安装可用相同域名和端口重新运行安装器，并传入与当前镜像引用不同的固定 `--version`；相同引用的幂等重跑不会再次 pull `latest` 等可变标签；安装器会保留管理员令牌和持久化数据，更新 Server/sshd 镜像后重新验证 HTTPS。
+生产环境应使用 `--version` 固定发布标签。`latest` 适合首次体验，不适合无人值守升级。安装器会把解析后的 Server/sshd 不可变镜像 ID 写入 `.env`，Compose 只使用这些 ID；相同引用的幂等重跑不会再次 pull，也不会因为本地 `latest` 被改指而静默换镜像。旧安装首次重跑时会从仍在运行且属于同一安装目录的容器迁移镜像 ID；若容器与 ID 都不存在则拒绝猜测。升级请传入不同的固定 `--version`，安装器会保留管理员令牌和持久化数据，并在更新镜像后重新验证 HTTPS。
 
 ## 从源码构建
 

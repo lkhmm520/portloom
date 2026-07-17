@@ -1,0 +1,180 @@
+name: finalize-release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing PortLoom release tag to verify and finalize (for example v0.3.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: finalize-release
+  cancel-in-progress: false
+
+jobs:
+  verify-production-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Validate immutable release tag
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="$INPUT_TAG"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$ ]]; then
+            echo "invalid OCI-compatible release tag: $tag" >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$tag" || { echo "release tag does not exist: $tag" >&2; exit 1; }
+          revision=$(git rev-parse HEAD)
+          [ "$revision" = "$(git rev-parse "$tag^{commit}")" ] || { echo "checkout does not match $tag" >&2; exit 1; }
+          version=${tag#v}
+          core=${version%%-*}
+          IFS=. read -r major minor _ <<< "$core"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "revision=$revision"
+            echo "major=$major"
+            echo "minor=$minor"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+      - name: Verify exact public images, revisions, and platforms
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          for image in server agent sshd docs; do
+            ref="ghcr.io/lkhmm520/portloom-${image}:${VERSION}"
+            manifest=$(docker buildx imagetools inspect --raw "$ref")
+            for arch in amd64 arm64; do
+              jq -e --arg arch "$arch" \
+                'any(.manifests[]; .platform.os == "linux" and .platform.architecture == $arch)' \
+                <<<"$manifest" >/dev/null || { echo "$ref is missing linux/$arch" >&2; exit 1; }
+            done
+            for arch in amd64 arm64; do
+              docker pull --platform "linux/$arch" "$ref" >/dev/null
+              actual_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+              actual_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$ref")
+              [ "$actual_revision" = "$EXPECTED_REVISION" ] || { echo "$ref linux/$arch revision $actual_revision != $EXPECTED_REVISION" >&2; exit 1; }
+              [ "$actual_version" = "$VERSION" ] || { echo "$ref linux/$arch version $actual_version != $VERSION" >&2; exit 1; }
+            done
+          done
+      - name: Verify production documentation and installer digests
+        run: |
+          for script in install-server.sh install-agent.sh; do
+            matched=false
+            for _ in $(seq 1 6); do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                "https://docs.961121.xyz/${script}" >"/tmp/${script}"; then
+                expected_sha=$(sha256sum "docs/public/${script}" | cut -d ' ' -f 1)
+                public_sha=$(sha256sum "/tmp/${script}" | cut -d ' ' -f 1)
+                if [ "$public_sha" = "$expected_sha" ]; then matched=true; break; fi
+                echo "production digest not current yet: ${script}" >&2
+              fi
+              sleep 10
+            done
+            [ "$matched" = true ] || { echo "production installer unavailable or stale: ${script}" >&2; exit 1; }
+            bash -n "/tmp/${script}"
+          done
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://docs.961121.xyz/ >/dev/null
+      - name: Log in to GHCR for stable channel promotion
+        if: steps.release.outputs.prerelease == 'false'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Preflight stable channels against rollback
+        if: steps.release.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+          MAJOR: ${{ steps.release.outputs.major }}
+          MINOR: ${{ steps.release.outputs.minor }}
+        run: |
+          for image in server agent sshd docs; do
+            repository="lkhmm520/portloom-${image}"
+            image_ref="ghcr.io/${repository}"
+            token=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r .token)
+            [ -n "$token" ] && [ "$token" != null ] || { echo 'GHCR returned no pull token' >&2; exit 1; }
+            printf -v registry_auth 'Authorization: Bearer %s' "$token"
+            for channel in latest "$MAJOR" "$MAJOR.$MINOR"; do
+              status=$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+                --output /tmp/channel-manifest --write-out '%{http_code}' \
+                -H "$registry_auth" \
+                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+                "https://ghcr.io/v2/${repository}/manifests/${channel}")
+              case "$status" in
+                404) continue;;
+                200) ;;
+                *) echo "GHCR channel probe failed with HTTP $status for ${image_ref}:${channel}" >&2; exit 1;;
+              esac
+              docker pull --platform linux/amd64 "${image_ref}:${channel}" >/dev/null
+              current_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${image_ref}:${channel}")
+              current_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image_ref}:${channel}")
+              [[ "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "stable channel ${image_ref}:${channel} has invalid version $current_version" >&2; exit 1; }
+              newest=$(printf '%s\n%s\n' "$current_version" "$VERSION" | sort -V | tail -n 1)
+              [ "$newest" = "$VERSION" ] || { echo "refusing stable channel rollback: ${image_ref}:${channel} is $current_version, requested $VERSION" >&2; exit 1; }
+              if [ "$current_version" = "$VERSION" ] && [ "$current_revision" != "$EXPECTED_REVISION" ]; then
+                echo "stable channel ${image_ref}:${channel} has the requested version but a different revision" >&2
+                exit 1
+              fi
+            done
+          done
+      - name: Promote verified stable release channels
+        if: steps.release.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          MAJOR: ${{ steps.release.outputs.major }}
+          MINOR: ${{ steps.release.outputs.minor }}
+        run: |
+          for image in server agent sshd docs; do
+            repository="ghcr.io/lkhmm520/portloom-${image}"
+            source="${repository}:${VERSION}"
+            docker buildx imagetools create \
+              --tag "${repository}:latest" \
+              --tag "${repository}:${MAJOR}" \
+              --tag "${repository}:${MAJOR}.${MINOR}" \
+              "$source"
+            source_sha=$(docker buildx imagetools inspect --raw "$source" | sha256sum | cut -d ' ' -f 1)
+            for channel in latest "$MAJOR" "$MAJOR.$MINOR"; do
+              channel_sha=$(docker buildx imagetools inspect --raw "${repository}:${channel}" | sha256sum | cut -d ' ' -f 1)
+              [ "$channel_sha" = "$source_sha" ] || { echo "channel ${repository}:${channel} does not match $source" >&2; exit 1; }
+            done
+          done
+      - name: Create or validate idempotent GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          EXPECTED_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          revision_marker="PortLoom-Revision: $EXPECTED_REVISION"
+          if state=$(gh release view "$TAG" --json tagName,isDraft,isPrerelease,body 2>/dev/null); then
+            [ "$(jq -r .tagName <<<"$state")" = "$TAG" ] || { echo 'existing Release tag mismatch' >&2; exit 1; }
+            [ "$(jq -r .isDraft <<<"$state")" = false ] || { echo 'existing Release is unexpectedly a draft' >&2; exit 1; }
+            [ "$(jq -r .isPrerelease <<<"$state")" = "$EXPECTED_PRERELEASE" ] || { echo 'existing Release prerelease state mismatch' >&2; exit 1; }
+            grep -Fxq "$revision_marker" < <(jq -r .body <<<"$state") || { echo 'existing Release revision marker mismatch' >&2; exit 1; }
+            echo "GitHub Release already exists with the expected state: $TAG"
+          else
+            if [ "$EXPECTED_PRERELEASE" = true ]; then
+              gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG" --prerelease
+            else
+              gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG"
+            fi
+          fi

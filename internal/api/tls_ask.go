@@ -30,12 +30,13 @@ func (h *tlsAskHandler) allowTLSCertificate(w http.ResponseWriter, r *http.Reque
 		unauthorized(w)
 		return
 	}
-	host := domain.NormalizeHost(r.URL.Query().Get("domain"))
-	if host == "" {
+	host, valid := domain.NormalizeDNSHost(r.URL.Query().Get("domain"))
+	if !valid {
 		writeError(w, http.StatusBadRequest, "invalid_domain")
 		return
 	}
-	if host == domain.NormalizeHost(h.config.PublicHost) {
+	publicHost, publicHostValid := domain.NormalizeDNSHost(h.config.PublicHost)
+	if publicHostValid && host == publicHost {
 		w.WriteHeader(http.StatusOK)
 		return
 	}

@@ -12,6 +12,13 @@ Before the first public release is complete:
 
 The first release must publish Server, Agent, sshd, and docs images with the same safe version tag, deploy the docs-hosted scripts, and then pass the post-release checks below.
 
+## Release sequence
+
+1. Push the version tag and let `publish-images` complete its quality gate, publish all four exact-version images, verify commit revisions and both architectures, and compare the installers embedded in the docs image. Existing exact tags are never overwritten; a rerun only fills missing images. This workflow does not wait for external docs deployment and does not move `latest`, major, or minor channels early.
+2. Deploy the exact `ghcr.io/lkhmm520/portloom-docs:<version>` image on the authoritative docs host; do not rely only on floating `latest`.
+3. Manually run `finalize-release` with the same `v<version>` tag. It re-verifies both architectures' image revisions, production docs, and both installer SHA-256 digests. Only an accepted stable release moves `latest`, major, and minor channels, and replaying an older release cannot downgrade them; prereleases never move them. The GitHub Release is created or validated with an exact commit marker only after those steps finish.
+4. If docs deployment or public verification fails, repair the deployment and rerun only `finalize-release`; do not rebuild and republish already verified images.
+
 ## Artifact checks after every release
 
 1. Download both scripts from the public docs domain; require successful HTTP responses, non-empty files, and clean `sh -n` results.

@@ -77,7 +77,6 @@ func ValidHost(value string) bool {
 
 func (r *Route) Validate() error {
 	r.Name = strings.TrimSpace(r.Name)
-	r.Domain = NormalizeHost(r.Domain)
 	r.LocalHost = NormalizeHost(r.LocalHost)
 	r.TunnelGroup = strings.TrimSpace(r.TunnelGroup)
 	if r.Name == "" {
@@ -87,13 +86,16 @@ func (r *Route) Validate() error {
 		return errors.New("protocol must be http or tcp")
 	}
 	if r.Protocol == ProtocolHTTP {
-		if !ValidHost(r.Domain) {
+		normalizedDomain, valid := NormalizeDNSHost(r.Domain)
+		if !valid {
 			return errors.New("valid domain is required for HTTP route")
 		}
+		r.Domain = normalizedDomain
 		if r.PublicPort != 0 {
 			return errors.New("public port is only valid for TCP route")
 		}
 	} else {
+		r.Domain = NormalizeHost(r.Domain)
 		if r.Domain != "" {
 			return errors.New("domain is only valid for HTTP route")
 		}

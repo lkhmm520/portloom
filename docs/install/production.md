@@ -26,11 +26,11 @@ Server 需要 `NET_BIND_SERVICE` capability 才能以非 root 身份绑定 80/44
 ./install-server.sh --domain portloom.example.com --version 0.3.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
-docker compose up -d
 docker compose ps
+docker compose logs --tail=100 server
 ```
 
-保持 Compose 项目名和卷路径。不要使用临时 `docker run` 重建数据库容器。
+安装器已启动并验证服务；不要在其后另行执行裸 `docker compose up`，否则会绕过 readiness 与回滚保护。保持 Compose 项目名和卷路径。不要使用临时 `docker run` 重建数据库容器。
 
 ## 受管 SSH 边界
 

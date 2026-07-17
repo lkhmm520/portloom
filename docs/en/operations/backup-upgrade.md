@@ -19,7 +19,7 @@ For manually maintained Compose deployments, pin the new image tags and upgrade 
 
 ```bash
 docker compose pull
-docker compose up -d
+docker compose up -d --pull never
 docker compose ps
 docker compose logs --tail=100
 ```
@@ -34,7 +34,7 @@ For an easy install already using the v0.3 native edge, rerun the installer with
 ./install-server.sh --domain portloom.example.com --version 0.3.1
 ```
 
-To keep rollback valid when mutable tags such as `latest` are involved, an idempotent rerun with unchanged image references does not pull them again; upgrades must use a new pinned version. When image tags change, the installer fully generates candidate files before creating `native-upgrade-backup-0.3.1/` (the suffix is the target version), containing the pre-upgrade `.env` and `compose.yml`. The new version succeeds only after a real HTTPS `/healthz` check. On failure, the installer restores old Compose and the canonical files and verifies old HTTPS. If automatic restoration cannot be verified, inspect the service manually as reported. The backup directory remains after success; archive or remove it after the release is stable.
+To keep reruns and rollback valid when mutable tags such as `latest` move locally, the installer persists immutable Server/sshd image IDs and Compose uses only those IDs; unchanged references are not pulled again. Upgrades must use a new pinned version. When image tags change, the installer fully generates candidate files before creating `native-upgrade-backup-0.3.1/` (the suffix is the target version), containing the pre-upgrade `.env` and `compose.yml`. The new version succeeds only after a real HTTPS `/healthz` check. On failure, the installer restores old Compose and canonical files with the previous immutable IDs and verifies old HTTPS. If automatic restoration cannot be verified, inspect the service manually as reported. The backup directory remains after success; archive or remove it after the release is stable.
 
 ## Migrate a v0.2.x easy install from Caddy to the v0.3.0 native edge
 
@@ -79,7 +79,7 @@ docker compose --env-file .env -f compose.yml down --remove-orphans
 cp migration-backup-v0.3.0/.env .env
 cp migration-backup-v0.3.0/compose.yml compose.yml
 cp migration-backup-v0.3.0/Caddyfile Caddyfile
-docker compose --env-file .env -f compose.yml up -d
+docker compose --env-file .env -f compose.yml up -d --pull never
 docker compose ps
 ```
 
@@ -87,4 +87,4 @@ Keep `server-data/`, `ssh-hostkeys/`, `ssh-auth/`, `caddy-data/`, and `caddy-con
 
 ## Ordinary version rollback
 
-Pin the previous image tags and recreate from the backed-up Compose configuration. Back up before database changes. An ingress rollback must also restore the previous public ingress and upstream mapping; starting an old tunnel container alone is insufficient.
+Pin the previous image tags and recreate from the backed-up Compose configuration with `up -d --pull never`. If the old image is absent locally, stop and restore the correct image manually rather than allowing Compose to pull a mutable tag implicitly. Back up before database changes. An ingress rollback must also restore the previous public ingress and upstream mapping; starting an old tunnel container alone is insufficient.

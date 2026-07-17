@@ -149,10 +149,13 @@
     };
     const config = actions[state.view];
     const button = $("#context-action-button");
+    const fullLabel = config ? t(config.label) : "";
+    const shortLabel = config ? t(config.shortLabel) : "";
     button.hidden = !config;
     button.dataset.action = config?.action || "";
-    button.dataset.shortLabel = config ? t(config.shortLabel) : "";
-    button.textContent = config ? t(config.label) : "";
+    button.setAttribute("aria-label", fullLabel);
+    button.querySelector(".context-action-full").textContent = fullLabel;
+    button.querySelector(".context-action-short").textContent = shortLabel;
   }
 
   function applyLocale() {
@@ -200,8 +203,10 @@
   function setLoading(loading) {
     state.loading = loading;
     const button = $("#refresh-button");
+    const label = t(loading ? "common.refreshing" : "common.refresh");
     button.disabled = loading;
-    button.textContent = t(loading ? "common.refreshing" : "common.refresh");
+    button.setAttribute("aria-label", label);
+    button.querySelector(".refresh-full").textContent = label;
   }
 
   async function loadAll({ quiet = false, signal } = {}) {

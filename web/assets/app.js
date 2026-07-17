@@ -144,13 +144,14 @@
 
   function updateContextAction() {
     const actions = {
-      tokens: { label: "context.generateAgent", action: "token" },
-      routes: { label: "context.addRoute", action: "route" }
+      tokens: { label: "context.generateAgent", shortLabel: "context.generateAgentShort", action: "token" },
+      routes: { label: "context.addRoute", shortLabel: "context.addRouteShort", action: "route" }
     };
     const config = actions[state.view];
     const button = $("#context-action-button");
     button.hidden = !config;
     button.dataset.action = config?.action || "";
+    button.dataset.shortLabel = config ? t(config.shortLabel) : "";
     button.textContent = config ? t(config.label) : "";
   }
 
@@ -261,10 +262,14 @@
     });
   }
 
+  function clientCountLabel(count) {
+    return t(count === 1 ? "clients.countOne" : "clients.countOther", { count });
+  }
+
   function renderClients() {
     const body = $("#clients-body"); body.replaceChildren();
     $("#clients-empty").hidden = state.clients.length > 0;
-    $("#client-count").textContent = t("clients.count", { count: state.clients.length });
+    $("#client-count").textContent = clientCountLabel(state.clients.length);
     state.clients.forEach(client => {
       const row = el("tr");
       addCell(row, clientName(client), client.id);
@@ -297,6 +302,11 @@
     });
   }
 
+  function routeExposure(route) {
+    if (route.protocol !== "tcp") return route.domain || "—";
+    return route.public_port ? `TCP :${route.public_port}` : t("routes.tcpAuto");
+  }
+
   function renderRoutes() {
     const body = $("#routes-body"); body.replaceChildren();
     $("#routes-empty").hidden = state.routes.length > 0;
@@ -304,7 +314,7 @@
       const row = el("tr");
       addCell(row, route.name || t("common.unnamedRoute"), `${route.protocol || "http"} · ${t(route.enabled ? "routes.enabled" : "routes.disabled")}`);
       addCell(row, `${route.local_host}:${route.local_port}`, state.clients.find(c => c.id === route.client_id)?.name || route.client_id);
-      const exposure = route.protocol === "tcp" ? `TCP :${route.public_port || "auto"}` : route.domain || "—";
+      const exposure = routeExposure(route);
       addCell(row, exposure, route.remote_port ? t("routes.loopbackPort", { port: route.remote_port }) : t("routes.portPending"));
       const statusCell = el("td"); statusCell.append(routeStatus(route)); row.append(statusCell);
       addCell(row, `${route.observed_revision || 0} / ${route.desired_revision || 0}`, t("table.observedDesired"));

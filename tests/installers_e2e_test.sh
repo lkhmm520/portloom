@@ -96,10 +96,21 @@ for _ in $(seq 1 120); do check_route && break; sleep 0.25; done
 check_route
 CONTAINER=portloom-server python3 - <<'PY'
 import json, os, subprocess
-cfg = json.loads(subprocess.check_output(["docker", "inspect", os.environ["CONTAINER"]]))[0]["HostConfig"]
+container = json.loads(subprocess.check_output(["docker", "inspect", os.environ["CONTAINER"]]))[0]
+cfg = container["HostConfig"]
 caps = {cap.removeprefix("CAP_") for cap in cfg["CapAdd"]}
 assert caps == {"NET_BIND_SERVICE"}, cfg["CapAdd"]
 assert cfg["CapDrop"] == ["ALL"], cfg["CapDrop"]
+assert container["Config"]["User"] == "tunnel", container["Config"]["User"]
+assert "no-new-privileges:true" not in (cfg["SecurityOpt"] or []), cfg["SecurityOpt"]
+status = subprocess.check_output([
+    "docker", "exec", os.environ["CONTAINER"], "/bin/sh", "-c",
+    'while IFS= read -r line; do case "$line" in Uid:*|CapEff:*) echo "$line";; esac; done < /proc/1/status',
+], text=True).splitlines()
+uid = next(line.split()[1] for line in status if line.startswith("Uid:"))
+cap_eff = int(next(line.split()[1] for line in status if line.startswith("CapEff:")), 16)
+assert uid == "65532", uid
+assert cap_eff == 1 << 10, hex(cap_eff)
 PY
 check_control_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "$domain:$edge_http_port:127.0.0.1" "http://$domain:$edge_http_port/healthz")" = 308 ]; }
 check_route_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "installer-route.test:$edge_http_port:127.0.0.1" "http://installer-route.test:$edge_http_port/backend.txt")" = 308 ]; }

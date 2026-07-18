@@ -16,13 +16,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
+    && apt-get install -y --no-install-recommends ca-certificates curl libcap2-bin tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 65532 tunnel \
     && useradd -u 65532 -g tunnel -d /nonexistent -s /usr/sbin/nologin tunnel \
     && install -d -o tunnel -g tunnel /app /data
 WORKDIR /app
 COPY --from=build /out/portloom-server /usr/local/bin/portloom-server
+RUN setcap cap_net_bind_service=ep /usr/local/bin/portloom-server \
+    && test "$(getcap /usr/local/bin/portloom-server)" = "/usr/local/bin/portloom-server cap_net_bind_service=ep"
 COPY --chown=tunnel:tunnel web/ /app/web/
 USER tunnel
 VOLUME ["/data"]

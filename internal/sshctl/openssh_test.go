@@ -51,6 +51,26 @@ func TestEnsureMasterUsesFixedExecutableAndArgumentArray(t *testing.T) {
 		t.Fatalf("args:\n got %#v\nwant %#v", call.args, want)
 	}
 }
+func TestEnsureMasterUsesUnbracketedIPv6Destination(t *testing.T) {
+	executor := &recordingExecutor{}
+	cfg := validSSHConfig()
+	cfg.Host = "2001:db8::1"
+	runner, err := NewOpenSSHRunner(cfg, WithExecutor(executor))
+	if err != nil {
+		t.Fatalf("NewOpenSSHRunner: %v", err)
+	}
+	if err := runner.EnsureMaster(context.Background()); err != nil {
+		t.Fatalf("EnsureMaster: %v", err)
+	}
+	if len(executor.calls) != 1 {
+		t.Fatalf("calls=%d", len(executor.calls))
+	}
+	got := executor.calls[0].args[len(executor.calls[0].args)-1]
+	if want := "tunnel-agent@2001:db8::1"; got != want {
+		t.Fatalf("destination=%q want=%q", got, want)
+	}
+}
+
 func TestCheckMasterUsesFixedExecutableAndArgumentArray(t *testing.T) {
 	executor := &recordingExecutor{}
 	runner := newTestRunner(t, executor)

@@ -276,7 +276,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    security_opt: [no-new-privileges:true]
+    # The non-root Server binary carries only cap_net_bind_service=ep.
+    # no-new-privileges must stay disabled here or Linux suppresses that file capability.
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
 EOF

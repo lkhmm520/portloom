@@ -158,11 +158,7 @@ func validateForward(forward Forward) error {
 	return nil
 }
 func destination(config Config) string {
-	host := config.Host
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return config.User + "@" + host
+	return config.User + "@" + config.Host
 }
 func formatForward(forward Forward) string {
 	return endpointHost(forward.BindHost) + ":" + strconv.Itoa(forward.RemotePort) + ":" + endpointHost(forward.LocalHost) + ":" + strconv.Itoa(forward.LocalPort)

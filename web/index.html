@@ -6,9 +6,9 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="PortLoom administration console" data-i18n-content="meta.description">
   <title>PortLoom</title>
-  <link rel="stylesheet" href="/assets/app.css?v=20260719.1">
-  <script defer src="/assets/i18n.js?v=20260719.1"></script>
-  <script defer src="/assets/app.js?v=20260719.1"></script>
+  <link rel="stylesheet" href="/assets/app.css?v=20260719.2">
+  <script defer src="/assets/i18n.js?v=20260719.2"></script>
+  <script defer src="/assets/app.js?v=20260719.2"></script>
 </head>
 <body>
   <div id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -96,7 +96,7 @@
       <section id="view-tokens" class="view" aria-labelledby="page-title">
         <article class="panel">
           <div class="panel-heading"><p class="eyebrow" data-i18n="tokens.connectHost">Connect another Docker host</p></div>
-          <div class="table-wrap"><table><thead><tr><th data-i18n="table.id">ID</th><th data-i18n="table.status">Status</th><th data-i18n="table.created">Created</th><th data-i18n="table.expires">Expires</th><th data-i18n="table.usedBy">Used by</th></tr></thead><tbody id="tokens-body"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th data-i18n="table.id">ID</th><th data-i18n="table.status">Status</th><th data-i18n="table.created">Created</th><th data-i18n="table.expires">Expires</th><th data-i18n="table.usedBy">Used by</th><th class="align-right" data-i18n="table.actions">Actions</th></tr></thead><tbody id="tokens-body"></tbody></table></div>
           <div id="tokens-empty" class="empty-state" data-i18n="tokens.empty">No enrollment tokens exist.</div>
         </article>
       </section>
@@ -159,6 +159,15 @@
       <div class="warning-box" data-i18n="secret.warning">The command contains a one-time credential. It expires automatically and is removed from the Agent configuration after enrollment.</div>
       <div class="dialog-actions"><button class="button primary" data-close-dialog type="button" data-i18n="common.done">Done</button></div>
     </div>
+  </dialog>
+
+  <dialog id="confirm-token-dialog">
+    <form method="dialog" class="dialog-card narrow">
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="confirm.action">Confirm action</p><h2 data-i18n="confirm.deleteToken">Delete token?</h2></div><button class="icon-button" value="cancel" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
+      <p id="confirm-token-message" class="muted"></p>
+      <div class="warning-box" data-i18n="confirm.tokenWarning">Enrolled agents are not affected; an unused token can no longer be used to enroll.</div>
+      <div class="dialog-actions"><button class="button secondary" value="cancel" data-i18n="common.cancel">Cancel</button><button class="button danger" value="confirm" data-i18n="tokens.delete">Delete token</button></div>
+    </form>
   </dialog>
 
   <dialog id="confirm-dialog">

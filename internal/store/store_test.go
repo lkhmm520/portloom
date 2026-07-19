@@ -639,3 +639,53 @@ func TestEnrollmentClaimIsIdempotentForSameRequestOnly(t *testing.T) {
 		t.Fatalf("same request accepted a different Agent token: %v", err)
 	}
 }
+
+func TestDeleteEnrollmentTokenByListID(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"), Options{PortRangeStart: 34000, PortRangeEnd: 34002})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// One expired and one available token.
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO enrollment_tokens
+		(token_hash, expires_at, expires_at_unix_nano, created_at) VALUES (?, ?, ?, ?)`,
+		hashToken("expired-token"), formatTime(time.Now().Add(-time.Hour)), time.Now().Add(-time.Hour).UnixNano(), formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateEnrollmentToken(ctx, "live-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := s.ListEnrollmentTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("tokens=%d", len(tokens))
+	}
+	for _, token := range tokens {
+		if err := s.DeleteEnrollmentToken(ctx, token.ID); err != nil {
+			t.Fatalf("delete %s (%s): %v", token.ID, token.Status, err)
+		}
+	}
+	remaining, err := s.ListEnrollmentTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining=%d", len(remaining))
+	}
+	// A deleted (revoked) token can no longer enroll.
+	if _, _, err := s.ConsumeEnrollmentToken(ctx, "live-token", "late-agent"); !errors.Is(err, ErrInvalidEnrollmentToken) {
+		t.Fatalf("revoked token error=%v", err)
+	}
+	if err := s.DeleteEnrollmentToken(ctx, tokens[0].ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("double delete error=%v", err)
+	}
+	for _, malformed := range []string{"", "token-xyz", "token-ABCDEF123456", "../etc", "token-0123456789abcdef"} {
+		if err := s.DeleteEnrollmentToken(ctx, malformed); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("malformed ID %q error=%v", malformed, err)
+		}
+	}
+}

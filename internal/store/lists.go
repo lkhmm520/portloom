@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
@@ -30,6 +31,31 @@ func (s *Store) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+var enrollmentTokenIDRE = regexp.MustCompile(`^token-([0-9a-f]{12})$`)
+
+// DeleteEnrollmentToken removes an enrollment token by the public list ID
+// ("token-" plus the first 12 hex characters of the token hash). Deleting an
+// unused token revokes it immediately; used or expired tokens are simply
+// removed from the list. Enrolled agents are never affected.
+func (s *Store) DeleteEnrollmentToken(ctx context.Context, id string) error {
+	match := enrollmentTokenIDRE.FindStringSubmatch(id)
+	if match == nil {
+		return fmt.Errorf("%w: invalid enrollment token ID", ErrInvalid)
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE substr(token_hash, 1, 12) = ?`, match[1])
+	if err != nil {
+		return fmt.Errorf("delete enrollment token: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete enrollment token: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) ListEnrollmentTokens(ctx context.Context) ([]domain.EnrollmentTokenInfo, error) {

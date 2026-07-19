@@ -406,8 +406,24 @@
       addCell(row, formatDate(token.created_at));
       addCell(row, formatDate(token.expires_at), token.expires_at ? relativeDate(token.expires_at) : t("common.noExpiry"));
       addCell(row, token.used_by || token.client_name || token.client_id || "—", token.used_at ? formatDate(token.used_at) : "");
+      const actions = el("td", "align-right"); const group = el("div", "action-group");
+      const remove = el("button", "action-button delete", t("tokens.delete")); remove.type = "button";
+      if (token.id) remove.dataset.deleteToken = token.id;
+      group.append(remove); actions.append(group); row.append(actions);
       body.append(row);
     });
+  }
+
+  async function confirmDeleteToken(token) {
+    $("#confirm-token-message").textContent = t("tokens.deleteQuestion", { id: token.id, status: t(`status.${tokenStatus(token)}`, {}, tokenStatus(token)) });
+    const dialog = $("#confirm-token-dialog"); dialog.showModal();
+    const result = await new Promise(resolve => dialog.addEventListener("close", () => resolve(dialog.returnValue), { once: true }));
+    if (result !== "confirm") return;
+    try {
+      await request(`/enrollment-tokens/${encodeURIComponent(token.id)}`, { method: "DELETE" });
+      await loadAll();
+      showNotice(t("tokens.deleted"), "success");
+    } catch (error) { showNotice(error.message); }
   }
 
   function routeExposure(route) {
@@ -671,6 +687,13 @@
     $("#route-form").addEventListener("submit", saveRoute);
     $("#route-protocol").addEventListener("change", event => syncRouteProtocolFields(event.currentTarget.form));
     $("#token-form").addEventListener("submit", createToken);
+    $("#tokens-body").addEventListener("click", event => {
+      const remove = event.target.closest("[data-delete-token]");
+      if (remove) {
+        const token = state.tokens.find(item => item.id === remove.dataset.deleteToken);
+        if (token) confirmDeleteToken(token);
+      }
+    });
     $("#routes-body").addEventListener("click", event => {
       const edit = event.target.closest("[data-edit-route]"); const remove = event.target.closest("[data-delete-route]");
       if (edit) openRouteDialog(state.routes.find(route => route.id === edit.dataset.editRoute));

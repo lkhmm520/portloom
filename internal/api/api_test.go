@@ -353,3 +353,35 @@ func TestAgentEnrollmentClaimRetriesIdempotently(t *testing.T) {
 		t.Fatalf("claimed token authentication: %#v %v", authenticated, err)
 	}
 }
+
+func TestAdminDeletesEnrollmentToken(t *testing.T) {
+	s := openTestStore(t)
+	handler := New(s, Config{AdminToken: "admin-secret"})
+	issued := performJSON(t, handler, http.MethodPost, "/api/v1/enrollment-tokens", nil, "admin-secret")
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("issue status=%d", issued.Code)
+	}
+	list := performJSON(t, handler, http.MethodGet, "/api/v1/enrollment-tokens", nil, "admin-secret")
+	var tokens []struct {
+		ID string `json:"id"`
+	}
+	decodeResponse(t, list, &tokens)
+	if len(tokens) != 1 || tokens[0].ID == "" {
+		t.Fatalf("tokens=%+v", tokens)
+	}
+	if unauthorized := performJSON(t, handler, http.MethodDelete, "/api/v1/enrollment-tokens/"+tokens[0].ID, nil, ""); unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated delete status=%d", unauthorized.Code)
+	}
+	deleted := performJSON(t, handler, http.MethodDelete, "/api/v1/enrollment-tokens/"+tokens[0].ID, nil, "admin-secret")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	again := performJSON(t, handler, http.MethodDelete, "/api/v1/enrollment-tokens/"+tokens[0].ID, nil, "admin-secret")
+	if again.Code != http.StatusNotFound {
+		t.Fatalf("double delete status=%d", again.Code)
+	}
+	invalid := performJSON(t, handler, http.MethodDelete, "/api/v1/enrollment-tokens/not-a-token", nil, "admin-secret")
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid ID status=%d", invalid.Code)
+	}
+}

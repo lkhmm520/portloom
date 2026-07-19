@@ -67,6 +67,7 @@ func New(state *store.Store, config Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/clients", s.admin(s.listClients))
 	mux.HandleFunc("GET /api/v1/enrollment-tokens", s.admin(s.listEnrollmentTokens))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.admin(s.issueEnrollmentToken))
+	mux.HandleFunc("DELETE /api/v1/enrollment-tokens/{id}", s.admin(s.deleteEnrollmentToken))
 	mux.HandleFunc("GET /api/v1/routes", s.admin(s.listRoutes))
 	mux.HandleFunc("POST /api/v1/routes", s.admin(s.createRoute))
 	mux.HandleFunc("GET /api/v1/routes/{id}", s.admin(s.getRoute))
@@ -219,6 +220,14 @@ func (s *server) listEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tokens)
+}
+
+func (s *server) deleteEnrollmentToken(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteEnrollmentToken(r.Context(), r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) listRoutes(w http.ResponseWriter, r *http.Request) {

@@ -299,7 +299,7 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, token string, expires
 func (s *Store) ConsumeEnrollmentToken(ctx context.Context, token, agentName string) (domain.Agent, string, error) {
 	var agent domain.Agent
 	agentName = strings.TrimSpace(agentName)
-	if token == "" || agentName == "" {
+	if token == "" || !domain.ValidAgentName(agentName) {
 		return agent, "", ErrInvalidEnrollmentToken
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -350,7 +350,7 @@ func (s *Store) ClaimEnrollmentToken(ctx context.Context, token, agentName, requ
 	agentName = strings.TrimSpace(agentName)
 	requestID = strings.TrimSpace(requestID)
 	agentToken = strings.TrimSpace(agentToken)
-	if token == "" || agentName == "" || len(requestID) != 64 || len(agentToken) != 64 {
+	if token == "" || !domain.ValidAgentName(agentName) || len(requestID) != 64 || len(agentToken) != 64 {
 		return agent, ErrInvalidEnrollmentToken
 	}
 	if _, err := hex.DecodeString(requestID); err != nil {

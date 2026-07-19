@@ -32,6 +32,10 @@ type Config struct {
 	ServerVersion        string
 	PublicHost           string
 	TLSAskToken          string
+	TCPEnabled           bool
+	TCPBindHost          string
+	RoutePublicStatus    func(domain.Route) string
+	TCPPortReserved      func(int) bool
 }
 
 type server struct {
@@ -123,7 +127,13 @@ func readSSHHostPublicKey(path string) (string, error) {
 
 func (s *server) systemInfo(w http.ResponseWriter, _ *http.Request) {
 	managed := strings.TrimSpace(s.config.AuthorizedKeysPath) != "" && strings.TrimSpace(s.config.SSHHostPublicKeyPath) != ""
-	response := map[string]any{"managed_ssh": managed, "version": s.config.ServerVersion}
+	response := map[string]any{
+		"managed_ssh": managed, "version": s.config.ServerVersion,
+		"tcp_edge": s.config.TCPEnabled,
+	}
+	if s.config.TCPEnabled {
+		response["tcp_bind_host"] = s.config.TCPBindHost
+	}
 	if managed {
 		keyText, err := readSSHHostPublicKey(s.config.SSHHostPublicKeyPath)
 		if err != nil {
@@ -208,6 +218,9 @@ func (s *server) listRoutes(w http.ResponseWriter, r *http.Request) {
 		internalError(w)
 		return
 	}
+	for index := range routes {
+		routes[index] = s.decorateRoute(routes[index])
+	}
 	writeJSON(w, http.StatusOK, routes)
 }
 
@@ -220,12 +233,15 @@ func (s *server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "reserved_domain")
 		return
 	}
+	if !s.validateTCPRoute(w, route) {
+		return
+	}
 	created, err := s.store.CreateRoute(r.Context(), route)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, s.decorateRoute(created))
 }
 
 func (s *server) getRoute(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +250,7 @@ func (s *server) getRoute(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, route)
+	writeJSON(w, http.StatusOK, s.decorateRoute(route))
 }
 
 func (s *server) updateRoute(w http.ResponseWriter, r *http.Request) {
@@ -246,18 +262,59 @@ func (s *server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "reserved_domain")
 		return
 	}
+	if !s.validateTCPRoute(w, route) {
+		return
+	}
 	updated, err := s.store.UpdateRoute(r.Context(), r.PathValue("id"), route)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, s.decorateRoute(updated))
 }
 
 func (s *server) routeUsesReservedDomain(route domain.Route) bool {
 	return route.Protocol == domain.ProtocolHTTP &&
 		domain.NormalizeHost(route.Domain) != "" &&
 		domain.NormalizeHost(route.Domain) == domain.NormalizeHost(s.config.PublicHost)
+}
+
+func (s *server) validateTCPRoute(w http.ResponseWriter, route domain.Route) bool {
+	if route.Protocol != domain.ProtocolTCP {
+		return true
+	}
+	if !s.config.TCPEnabled {
+		writeError(w, http.StatusConflict, "tcp_edge_disabled")
+		return false
+	}
+	if s.config.TCPPortReserved != nil && s.config.TCPPortReserved(route.PublicPort) {
+		writeError(w, http.StatusConflict, "reserved_tcp_port")
+		return false
+	}
+	return true
+}
+
+func (s *server) decorateRoute(route domain.Route) domain.Route {
+	if !route.Enabled {
+		route.PublicStatus = "disabled"
+		return route
+	}
+	if route.Protocol == domain.ProtocolTCP {
+		if !s.config.TCPEnabled {
+			route.PublicStatus = "tcp_edge_disabled"
+		} else if s.config.RoutePublicStatus != nil {
+			route.PublicStatus = s.config.RoutePublicStatus(route)
+		} else {
+			route.PublicStatus = "pending"
+		}
+		return route
+	}
+	if route.PublicationReady() {
+		route.PublicStatus = "published"
+	} else {
+		route.PublicStatus = "waiting_agent"
+	}
+	return route
 }
 
 func (s *server) deleteRoute(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +333,10 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 		AgentToken string `json:"agent_token"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	if !domain.ValidAgentName(request.Name) {
+		writeError(w, http.StatusBadRequest, "invalid_agent_name")
 		return
 	}
 	if (request.RequestID == "") != (request.AgentToken == "") {

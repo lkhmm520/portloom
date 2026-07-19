@@ -32,8 +32,27 @@ type Route struct {
 	LocalStatus      string    `json:"local_status"`
 	TunnelStatus     string    `json:"tunnel_status"`
 	LastError        string    `json:"last_error,omitempty"`
+	AgentLastSeenAt  time.Time `json:"agent_last_seen_at,omitempty"`
+	PublicStatus     string    `json:"public_status,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+const AgentHeartbeatFreshness = 90 * time.Second
+
+// PublicationReady reports whether a route may currently receive public traffic.
+func (r Route) PublicationReady() bool {
+	return r.PublicationReadyAt(time.Now().UTC())
+}
+
+// PublicationReadyAt is the deterministic form used by tests and status APIs.
+func (r Route) PublicationReadyAt(now time.Time) bool {
+	if !r.Enabled || r.TunnelStatus != "up" ||
+		r.ObservedRevision < r.DesiredRevision || r.AgentLastSeenAt.IsZero() {
+		return false
+	}
+	age := now.Sub(r.AgentLastSeenAt)
+	return age >= -5*time.Second && age <= AgentHeartbeatFreshness
 }
 
 var hostnameRE = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$`)
@@ -99,8 +118,8 @@ func (r *Route) Validate() error {
 		if r.Domain != "" {
 			return errors.New("domain is only valid for HTTP route")
 		}
-		if r.PublicPort < 0 || r.PublicPort > 65535 {
-			return errors.New("public port must be between 1 and 65535 when set for TCP route")
+		if r.PublicPort < 1 || r.PublicPort > 65535 {
+			return errors.New("public port must be between 1 and 65535 for TCP route")
 		}
 	}
 	if !ValidHost(r.LocalHost) {

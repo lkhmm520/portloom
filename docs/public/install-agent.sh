@@ -10,6 +10,16 @@ Options:
   --version TAG     PortLoom image tag (default: latest)
 EOF
 }
+progress() { printf '[%s/%s] %s\n' "$1" "$2" "$3"; }
+resolve_flock() {
+  local candidate
+  candidate=$(command -v flock 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  for candidate in /opt/bin/flock /opt/sbin/flock; do
+    if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  done
+  return 1
+}
 server_url=""; name=""; token=""; ssh_host=""; ssh_port=""; ssh_host_key=""; home="${PORTLOOM_HOME:-$HOME/.portloom/agent}"; version=latest
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,13 +57,20 @@ if [ -z "$home" ] || has_control "$home"; then
   exit 2
 fi
 [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo 'invalid --version' >&2; exit 2; }
+progress 1 8 'Checking host prerequisites'
 command -v docker >/dev/null || { echo 'Docker is required' >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo 'Docker Compose v2 is required' >&2; exit 1; }
 command -v sha256sum >/dev/null || { echo 'sha256sum is required' >&2; exit 1; }
+flock_bin=$(resolve_flock) || {
+  echo 'flock is required to serialize Agent installation' >&2
+  echo 'QNAP/Entware: run /opt/bin/opkg install flock, then rerun this command.' >&2
+  exit 1
+}
 ready_attempts=${PORTLOOM_READY_ATTEMPTS:-60}
 [[ "$ready_attempts" =~ ^[0-9]+$ ]] && [ "$ready_attempts" -ge 1 ] && [ "$ready_attempts" -le 600 ] || { echo 'PORTLOOM_READY_ATTEMPTS must be within 1..600' >&2; exit 2; }
 umask 077
 image="${PORTLOOM_AGENT_IMAGE_OVERRIDE:-ghcr.io/lkhmm520/portloom-agent:$version}"
+progress 2 8 'Preparing the install directory'
 portloom_root="$HOME/.portloom"
 case "$home" in
   "$portloom_root"|"$portloom_root"/*) mkdir -p "$portloom_root"; chmod 0711 "$portloom_root";;
@@ -61,10 +78,9 @@ esac
 mkdir -p "$home"
 home=$(cd "$home" && pwd -L)
 chmod 0711 "$home"
-command -v flock >/dev/null || { echo 'flock is required to serialize Agent installation' >&2; exit 1; }
 exec 9>"$home/.install.lock"
 chmod 0600 "$home/.install.lock"
-flock -n 9 || { echo "another Agent installation is already running in $home" >&2; exit 1; }
+"$flock_bin" -n 9 || { echo "another Agent installation is already running in $home" >&2; exit 1; }
 # Prevent long-running Docker children from keeping the installer lock after this shell exits.
 docker() { command docker "$@" 9>&-; }
 docker_run() { docker run --pull=never "$@"; }
@@ -93,11 +109,15 @@ set_env_value() {
   mv "$tmp" "$home/.env"
 }
 wait_ready() {
-  local ready_image=$1 expected_nonce=$2 observed
-  for _ in $(seq 1 "$ready_attempts"); do
+  local ready_image=$1 expected_nonce=$2 observed attempt=1
+  while [ "$attempt" -le "$ready_attempts" ]; do
     observed=$(docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /bin/cat "$ready_image" /data/managed-ssh.ready 2>/dev/null || true) 9>&-
     [ "$observed" = "$expected_nonce" ] && return 0
+    if [ $((attempt % 10)) -eq 0 ]; then
+      printf 'Still waiting for Agent readiness (%s/%s)...\n' "$attempt" "$ready_attempts"
+    fi
     sleep 1
+    attempt=$((attempt + 1))
   done
   return 1
 }
@@ -157,6 +177,7 @@ EOF
 host_label="$ssh_host"; [ "$ssh_port" = 22 ] || host_label="[$ssh_host]:$ssh_port"
 host_key_sha256=$(printf '%s' "$ssh_host_key" | sha256sum | cut -d ' ' -f 1)
 if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
+  progress 3 8 'Validating the existing Agent identity'
   [ -f "$home/.env" ] || { echo 'existing Agent compose.yml has no .env; manual recovery is required' >&2; exit 1; }
   [ "$(env_value TM_SERVER_URL || true)" = "$server_url" ] &&
     [ "$(env_value TM_CLIENT_NAME || true)" = "$name" ] &&
@@ -192,6 +213,7 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   valid_image_id "$recovery_image" || { echo 'immutable Agent image identity is unavailable; restore the original container or image ID before recovery' >&2; exit 1; }
   set_env_value PORTLOOM_AGENT_IMAGE_ID "$recovery_image"
   write_agent_compose
+  progress 4 8 'Refreshing the Agent SSH trust'
   if docker_run --rm --user 65532:65532 -v "$home/data:/data:ro" --entrypoint /usr/bin/test "$recovery_image" -L /data/agent.json; then
     echo 'refusing to recover from a symlinked agent.json' >&2
     exit 1
@@ -199,15 +221,19 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   write_known_hosts "$recovery_image"
   rotate_ready_nonce
   remove_ready "$recovery_image"
+  progress 5 8 'Restarting the existing Agent'
   (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  progress 6 8 'Waiting for managed SSH and initial synchronization'
   if ! wait_ready "$recovery_image" "$ready_nonce"; then
-    echo 'Existing Agent has not established managed SSH within 60 seconds; fix connectivity and rerun the same command' >&2
+    echo "Existing Agent was not ready after $ready_attempts attempts; fix connectivity and rerun the same command" >&2
     exit 1
   fi
+  progress 7 8 'Removing the one-time enrollment credential'
   scrub_enrollment_token
   rotate_ready_nonce
   remove_ready "$recovery_image"
   (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  progress 8 8 'Verifying token-free restart and heartbeat'
   if ! wait_ready "$recovery_image" "$ready_nonce"; then
     echo 'Agent credentials were recovered, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
     exit 1
@@ -215,6 +241,7 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   printf '\nPortLoom Agent recovery completed for %s.\nFiles: %s\n' "$name" "$home"
   exit 0
 fi
+progress 3 8 'Pulling and pinning the Agent image'
 if [ "${PORTLOOM_SKIP_PULL:-false}" != true ]; then docker pull "$image" >/dev/null; fi
 image_ref=$image
 image=$(image_id_for_ref "$image_ref") || { echo "unable to resolve immutable Agent image ID for $image_ref" >&2; exit 1; }
@@ -225,6 +252,7 @@ if [ -d "$home/data" ]; then
     exit 1
   fi
 fi
+progress 4 8 'Preparing the Agent identity and SSH trust'
 mkdir -p "$home/data/ssh"
 docker_run --rm --user 0:0 -v "$home/data:/data" --entrypoint /bin/chown "$image" -R 65532:65532 /data
 docker_run --rm --user 65532:65532 -v "$home/data:/data" --entrypoint /bin/rm "$image" -f /data/managed-ssh.ready
@@ -250,15 +278,19 @@ write_known_hosts "$image"
 write_agent_compose
 rotate_ready_nonce
 remove_ready "$image"
+progress 5 8 'Starting Agent and enrolling'
 (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --pull never) 9>&-
+progress 6 8 'Waiting for managed SSH and initial synchronization'
 if ! wait_ready "$image" "$ready_nonce"; then
-  echo 'Agent did not establish managed SSH within 60 seconds; its consumed credentials were saved and rerunning the same command will resume safely' >&2
+  echo "Agent was not ready after $ready_attempts attempts; its consumed credentials were saved and rerunning the same command will resume safely" >&2
   exit 1
 fi
+progress 7 8 'Removing the one-time enrollment credential'
 scrub_enrollment_token
 rotate_ready_nonce
 remove_ready "$image"
 (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+progress 8 8 'Verifying token-free restart'
 if ! wait_ready "$image" "$ready_nonce"; then
   echo 'Agent enrolled, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
   exit 1

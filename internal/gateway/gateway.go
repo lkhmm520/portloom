@@ -50,8 +50,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var selected *domain.Route
 	for i := range routes {
 		route := &routes[i]
-		if route.Enabled && route.Protocol == domain.ProtocolHTTP && route.Domain == host &&
-			route.TunnelStatus == "up" && route.ObservedRevision >= route.DesiredRevision {
+		if route.Protocol == domain.ProtocolHTTP && route.Domain == host && route.PublicationReady() {
 			selected = route
 			break
 		}

@@ -91,10 +91,10 @@
     return row;
   }
   function routePublicStatus(route) {
-    const revisionCurrent = Number(route.observed_revision || 0) >= Number(route.desired_revision || 0);
-    if (String(route.protocol || "http").toLowerCase() !== "http") return "metadata only";
     if (!route.enabled) return "disabled";
-    return revisionCurrent && route.tunnel_status === "up" ? "published" : "pending";
+    if (route.public_status) return String(route.public_status).trim().toLowerCase();
+    const revisionCurrent = Number(route.observed_revision || 0) >= Number(route.desired_revision || 0);
+    return revisionCurrent && route.tunnel_status === "up" ? "published" : "waiting_agent";
   }
   function routeStatus(route) {
     const stack = el("div", "status-stack");
@@ -109,8 +109,7 @@
     const local = route.local_status === "up";
     const tunnel = route.tunnel_status === "up";
     const revisions = Number(route.observed_revision || 0) >= Number(route.desired_revision || 0);
-    const supported = String(route.protocol || "http").toLowerCase() === "http";
-    return Boolean(supported && route.enabled && local && tunnel && revisions);
+    return Boolean(route.enabled && local && tunnel && revisions && routePublicStatus(route) === "published");
   }
 
   function formatDate(value) {
@@ -242,7 +241,7 @@
 
   function renderDashboard() {
     const online = state.clients.filter(clientOnline).length;
-    const enabled = state.routes.filter(route => route.enabled && String(route.protocol || "http").toLowerCase() === "http").length;
+    const enabled = state.routes.filter(route => route.enabled).length;
     const healthy = state.routes.filter(routeHealthy).length;
     const drift = state.routes.filter(route => Number(route.observed_revision || 0) < Number(route.desired_revision || 0)).length;
     $("#metric-clients").textContent = String(online);
@@ -325,9 +324,6 @@
       addCell(row, `${route.observed_revision || 0} / ${route.desired_revision || 0}`, t("table.observedDesired"));
       const actions = el("td", "align-right"); const group = el("div", "action-group");
       const edit = el("button", "action-button", t("routes.edit")); edit.type = "button"; edit.dataset.editRoute = route.id;
-      if (String(route.protocol || "http").toLowerCase() !== "http") {
-        edit.disabled = true; edit.title = t("routes.tcpReadOnly");
-      }
       const remove = el("button", "action-button delete", t("routes.delete")); remove.type = "button"; remove.dataset.deleteRoute = route.id;
       group.append(edit, remove); actions.append(group); row.append(actions); body.append(row);
     });
@@ -410,35 +406,75 @@
     }
   }
 
+  function syncRouteProtocolFields(form) {
+    const protocol = String(form.elements.protocol.value || "http").toLowerCase();
+    const tcp = protocol === "tcp";
+    $("#route-domain-field").hidden = tcp;
+    $("#route-public-port-field").hidden = !tcp;
+    form.elements.domain.required = !tcp;
+    form.elements.public_port.required = tcp;
+    if (tcp && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "tcp";
+    if (!tcp && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "web";
+  }
+
   function openRouteDialog(route) {
     const form = $("#route-form"); form.reset(); $("#route-form-error").hidden = true;
     $("#route-dialog-title").textContent = t(route ? "dialog.editRoute" : "dialog.addRoute");
     $("#route-id").value = route?.id || "";
+    const tcpOption = form.elements.protocol.querySelector('option[value="tcp"]');
+    tcpOption.disabled = !state.system?.tcp_edge && route?.protocol !== "tcp";
     if (route) {
-      ["name", "client_id", "domain", "local_host", "local_port", "tunnel_group"].forEach(key => {
+      ["name", "client_id", "protocol", "domain", "local_host", "local_port", "public_port", "tunnel_group"].forEach(key => {
         const input = form.elements[key]; if (input && route[key] !== undefined) input.value = route[key];
       });
       form.elements.enabled.checked = Boolean(route.enabled);
-    } else { form.elements.local_host.value = "127.0.0.1"; form.elements.tunnel_group.value = "web"; form.elements.enabled.checked = true; }
+    } else {
+      form.elements.protocol.value = "http"; form.elements.local_host.value = "127.0.0.1";
+      form.elements.tunnel_group.value = "web"; form.elements.enabled.checked = true;
+    }
     form.elements.client_id.disabled = Boolean(route);
+    syncRouteProtocolFields(form);
     $("#route-dialog").showModal();
   }
   function routePayload(form) {
     const data = new FormData(form);
+    const protocol = String(form.elements.protocol.value || "http").toLowerCase();
     return {
-      name: String(data.get("name")).trim(), client_id: String(form.elements.client_id.value), protocol: "http",
-      domain: String(data.get("domain")).trim().toLowerCase(),
+      name: String(data.get("name")).trim(), client_id: String(form.elements.client_id.value), protocol,
+      domain: protocol === "http" ? String(data.get("domain")).trim().toLowerCase() : "",
       local_host: String(data.get("local_host")).trim(), local_port: Number(data.get("local_port")),
-      public_port: 0, tunnel_group: String(data.get("tunnel_group")).trim(), enabled: data.get("enabled") === "on"
+      public_port: protocol === "tcp" ? Number(data.get("public_port")) : 0,
+      tunnel_group: String(data.get("tunnel_group")).trim(), enabled: data.get("enabled") === "on"
     };
+  }
+  async function monitorRoutePublication(id) {
+    const terminalErrors = new Set(["conflict", "bind_error", "invalid", "tcp_edge_disabled"]);
+    for (let attempt = 0; attempt < 90 && state.token; attempt += 1) {
+      const route = await request(`/routes/${encodeURIComponent(id)}`);
+      const index = state.routes.findIndex(item => item.id === route.id);
+      if (index >= 0) state.routes[index] = route; else state.routes.push(route);
+      renderRoutes();
+      const status = routePublicStatus(route);
+      if (status === "published" || status === "disabled") {
+        showNotice(t(status === "published" ? "routes.published" : "routes.savedDisabled"), "success");
+        return;
+      }
+      if (terminalErrors.has(status)) {
+        showNotice(t(`status.${status.replaceAll("_", " ")}`, {}, status));
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    if (state.token) showNotice(t("routes.publishTimeout"));
   }
   async function saveRoute(event) {
     event.preventDefault(); const form = event.currentTarget; const id = $("#route-id").value;
     const error = $("#route-form-error"); error.hidden = true;
     const submit = form.querySelector("button[type=submit]"); submit.disabled = true;
     try {
-      await request(id ? `/routes/${encodeURIComponent(id)}` : "/routes", { method: id ? "PUT" : "POST", body: JSON.stringify(routePayload(form)) });
-      $("#route-dialog").close(); await loadAll(); showNotice(t(id ? "routes.updated" : "routes.created"), "success");
+      const saved = await request(id ? `/routes/${encodeURIComponent(id)}` : "/routes", { method: id ? "PUT" : "POST", body: JSON.stringify(routePayload(form)) });
+      $("#route-dialog").close(); await loadAll(); showNotice(t("routes.waitingForPublish"), "success");
+      void monitorRoutePublication(saved.id).catch(reason => showNotice(reason.message));
     } catch (reason) { error.textContent = reason.message; error.hidden = false; }
     finally { submit.disabled = false; }
   }
@@ -446,7 +482,10 @@
     return `'${String(value).replaceAll("'", `'"'"'`)}'`;
   }
   function isSafeImageTag(value) {
-    return typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(value);
+    return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(value);
+  }
+  function isSafeAgentName(value) {
+    return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
   }
   function buildAgentInstallCommand(options) {
     const args = [
@@ -455,7 +494,8 @@
     ];
     if (isSafeImageTag(options.version)) args.push(["--version", options.version]);
     return [
-      "curl -fsSLo portloom-install-agent.sh https://docs.961121.xyz/install-agent.sh",
+      "export PATH=/opt/bin:/opt/sbin:$PATH",
+      "if command -v curl >/dev/null 2>&1; then curl -fsSLo portloom-install-agent.sh https://docs.961121.xyz/install-agent.sh; elif command -v wget >/dev/null 2>&1; then wget -qO portloom-install-agent.sh https://docs.961121.xyz/install-agent.sh; else echo 'curl or wget is required' >&2; exit 1; fi",
       "chmod 0700 portloom-install-agent.sh",
       `./portloom-install-agent.sh ${args.map(([flag, value]) => `${flag} ${shellQuote(value)}`).join(" ")}`
     ].join(" && ");
@@ -465,12 +505,14 @@
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const error = $("#token-form-error"); error.hidden = true;
     const submit = form.querySelector("button[type=submit]"); submit.disabled = true;
     try {
+      const agentName = String(data.get("name")).trim();
+      if (!isSafeAgentName(agentName)) throw new APIError(t("agent.invalidName"), 400);
       if (!state.system?.managed_ssh || !state.system?.ssh_host_key) throw new APIError(t("agent.managedSSHDisabled"), 409);
       const result = await request("/enrollment-tokens", { method: "POST", body: JSON.stringify({ expires_in: String(data.get("expires_in")) }) });
       const secret = result?.token || result?.secret || result?.value;
       if (!secret) throw new APIError(t("agent.noSecret"), 500);
       const command = buildAgentInstallCommand({
-        serverURL: String(data.get("server_url")).trim(), name: String(data.get("name")).trim(), token: secret,
+        serverURL: String(data.get("server_url")).trim(), name: agentName, token: secret,
         sshHost: String(data.get("ssh_host")).trim(), sshPort: Number(data.get("ssh_port")), sshHostKey: state.system.ssh_host_key,
         version: state.system.version
       });
@@ -511,6 +553,7 @@
     $$(".nav-item").forEach(item => item.addEventListener("click", () => switchView(item.dataset.view)));
     $$('[data-goto]').forEach(item => item.addEventListener("click", () => switchView(item.dataset.goto)));
     $("#route-form").addEventListener("submit", saveRoute);
+    $("#route-protocol").addEventListener("change", event => syncRouteProtocolFields(event.currentTarget.form));
     $("#token-form").addEventListener("submit", createToken);
     $("#routes-body").addEventListener("click", event => {
       const edit = event.target.closest("[data-edit-route]"); const remove = event.target.closest("[data-delete-route]");

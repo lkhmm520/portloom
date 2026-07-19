@@ -1,71 +1,76 @@
 # Docker 安装
 
-PortLoom 分别安装在两台主机上。不要在 NAS 上安装 Server，也不要在 VPS 上用 Agent 代替 Server。
-
-```text
-公网 VPS：Server（原生 HTTPS 入口）+ 专用 sshd
-                 ▲
-                 │ Agent 主动建立加密隧道
-                 │
-内网 NAS：Agent → 本地服务
-```
+PortLoom 分别安装在两台主机：公网 VPS 运行 Server + 受管 sshd，NAS/内网主机运行 Agent 并主动连接公网。
 
 ## 要求
 
-两台主机都需要 Docker Engine 24+ 和 Compose v2。公网主机还需要：
+- 两台主机可访问 Docker daemon，并使用 Compose v2；Agent 接受 `docker compose` 或独立 `docker-compose` v2，Server 安装器只接受 Compose plugin；
+- 管理域名解析到 VPS；
+- 默认安装放行 TCP 80/443/2222，且本机 80/443 空闲；
+- NAS 只需出站访问 Server HTTPS 和 SSH，无需入站端口。
 
-- 一个解析到该主机的管理域名；
-- TCP 80、443 和 2222 可从公网访问；
-- 80/443 未被其他程序占用，以便 Server 完成 ACME HTTP-01 验证并提供 HTTPS。
+公网主机已有 Caddy/Nginx/NPM 时，不要直接运行默认安装命令占用 80/443；阅读[生产环境部署](/install/production)和[反向代理接入](/install/reverse-proxy)。
 
-如果公网主机已有 Caddy、Nginx 或 NPM，请不要运行简易安装器，以免端口冲突。改用[生产环境部署](/install/production)和[反向代理接入](/install/reverse-proxy)，让外部入口转发到 8080/8081。
-
-## 公网主机：Server
+## 公网主机：Server v0.4
 
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com
+./install-server.sh \
+  --domain portloom.example.com \
+  --version 0.4.0
 ```
 
-简易安装只运行 `portloom-server` 和 `portloom-sshd`。Server 直接监听公网 80/443，使用 autocert 获取证书；Compose 为它添加 `NET_BIND_SERVICE`，不会安装 Caddy、Nginx 或 NPM。
-
-默认安装目录是 `~/.portloom/server`：
+Server 安装器要求 `flock`；Agent 安装器才提供无 `flock` 的目录锁兼容。生成目录：
 
 ```text
-compose.yml       两个服务的 Compose 配置
-.env              镜像、端口、管理域名和随机令牌（0600）
-server-data/      SQLite 数据库和 certs/ 证书缓存
-ssh-hostkeys/     持久化的 Server SSH 主机密钥
-ssh-auth/         由 Server 重建的 Agent 授权文件
+compose.yml       Server + sshd 的 Compose 配置
+.env              固定镜像 ID、端口、管理域名、随机管理员令牌（0600）
+server-data/      SQLite 与 certs/ 证书缓存
+ssh-hostkeys/     Agent 已固定信任的 Server SSH 身份
+ssh-auth/         Server 从 SQLite 重建的 Agent 授权文件
 ```
 
-容器内证书缓存路径是 `/data/certs`，对应 `server-data/certs/`。不要删除 `server-data` 或 `ssh-hostkeys`：前者保存数据库和 ACME 证书，后者决定 Agent 信任的 Server 身份。
+不要删除 `server-data` 或 `ssh-hostkeys`，也不要用临时 `docker run` 重建服务。简易安装的升级必须重跑新版本安装器，让它执行候选配置、备份、真实 HTTPS readiness 和自动回滚。
 
-从包含 Caddy 的 v0.2.x 简易安装升级时，不要直接覆盖 Compose；请按[备份、升级与回滚](/operations/backup-upgrade)使用显式的 `--migrate-native-edge` 流程。
-
-常用命令：
+## v0.4 端口与 stream edge 参数
 
 ```bash
-cd ~/.portloom/server
-docker compose ps
-docker compose logs --tail=100
+# 主 edge 改成本机 8088/8443；公网 80 仍必须转发到 8088
+./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --http-port 8088 --https-port 8443
+
+# 首次安装时不发布 TCP/UDP
+./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --disable-tcp-edge
+
+# 首次安装时只在指定 IP 发布 TCP/UDP
+PORTLOOM_TCP_EDGE_BIND_HOST=192.0.2.10 \
+  ./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --enable-tcp-edge
 ```
 
-不要用 `docker compose pull && docker compose up -d` 升级简易安装；它会绕过候选配置、备份、HTTPS readiness 与自动回滚。升级应使用下方固定新 `--version` 的安装器重跑流程。
+`--enable-tcp-edge` 仅为兼容保留；v0.4 默认绑定 `0.0.0.0`，但安装器只在该参数出现时读取自定义 `PORTLOOM_TCP_EDGE_BIND_HOST`。这些开关可靠地定义首次安装；已有 `.env` 的非空值会被安装器保留，不要把重跑参数当成通用切换器。
+
+路由 `Public port` 留空跟随主 edge。使用上述自定义端口时不要在路由中再填写 8443，否则它表示额外 listener 并与主端口冲突。HTTP 308 会广告公网 `:8443`；只做 `public 443 -> local 8443` 不足以完成跳转，还必须公开/映射公网 8443，保持配置端口与公网端口一致，或让前置代理接管并正确重写跳转。自定义 Web/TCP 端口需放行 TCP，UDP 路由端口需放行 UDP。
 
 ## 内网主机：Agent
 
-推荐从 WebUI 的 **Add Agent** 页面复制命令。命令调用公开的 `install-agent.sh` 并带上一次性注册信息。默认安装目录是 `~/.portloom/agent`，其中 `data/agent.json` 保存身份，`data/ssh/` 保存 Agent 私钥和固定的 Server 主机公钥。
+从 WebUI **Add Agent** 复制命令，不要手抄一次性 Token。默认目录 `~/.portloom/agent`；必须持久化和备份完整安装目录（含 `.env`、`compose.yml` 与 `data/`），其中 `data/agent.json`、`data/ssh/id_ed25519` 和 `data/ssh/known_hosts` 是身份关键文件。
 
-## 安装器参数
+v0.4 Agent 安装器会补充常见 Synology/QNAP PATH，验证 Docker daemon，接受 Compose plugin 或独立 `docker-compose` v2，支持多种 SHA-256 工具，并在缺少 `flock` 时使用目录锁。失败后可重跑同一条命令续装；不要删除已有 identity。若残留 `$home/.install.lock.d`，必须先确认没有并发安装进程才能删除。
+
+同命令重跑只用于同版本续装/恢复。当前安装器会拒绝把已有 Agent 目录切换到不同 `--version`，也没有已发布的安装器内跨版本升级事务；不要用删除 `agent.json`、私钥或盲改不可变镜像 ID 的方式强行升级。
+
+## 查看状态
 
 ```bash
-./install-server.sh --help
-./install-agent.sh --help
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml ps
+docker compose --env-file .env -f compose.yml logs --tail=100 server
 ```
 
-生产环境应使用 `--version` 固定发布标签。`latest` 适合首次体验，不适合无人值守升级。安装器会把解析后的 Server/sshd 不可变镜像 ID 写入 `.env`，Compose 只使用这些 ID；相同引用的幂等重跑不会再次 pull，也不会因为本地 `latest` 被改指而静默换镜像。旧安装首次重跑时会从仍在运行且属于同一安装目录的容器迁移镜像 ID；若容器与 ID 都不存在则拒绝猜测。升级请传入不同的固定 `--version`，安装器会保留管理员令牌和持久化数据，并在更新镜像后重新验证 HTTPS。
+生产固定 `--version`。`latest` 适合首次体验，不适合无人值守升级。安装器把解析后的不可变镜像 ID 写入 `.env`；同引用重跑不会静默跟随本地已移动的 `latest`。
 
 ## 从源码构建
 
@@ -73,6 +78,4 @@ docker compose logs --tail=100
 git clone https://github.com/lkhmm520/portloom.git
 cd portloom
 make docker-build VERSION=local
-docker build -f Dockerfile.sshd -t portloom-sshd:local .
-docker build -f Dockerfile.docs -t portloom-docs:local .
 ```

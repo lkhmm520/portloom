@@ -12,5 +12,24 @@ Only this explicit public allowlist is copied during a docs build. Real `.env` f
 <DownloadCard title="Restricted sshd block" description="Deny shells and permit loopback reverse forwards only" file="sshd_config.portloom.conf" />
 
 ::: warning
-Replace every `change-me` value. Inspect `docker compose config`, but never commit rendered output containing real tokens.
+Replace every `change-me` value. A service-level Compose `env_file` does not participate in YAML interpolation, so pass the matching environment file explicitly:
+
+```bash
+cp server.env.example server.env
+docker compose --env-file server.env -f docker-compose.server.yml config
+
+cp agent.env.example agent.env
+docker compose --env-file agent.env -f docker-compose.agent.yml config
+
+cp agent-web.env.example agent-web.env
+cp agent-media.env.example agent-media.env
+docker compose --env-file agent-web.env --env-file agent-media.env \
+  -f docker-compose.dual-agent.yml config
+```
+
+Inspect rendered output, but never commit output containing real tokens.
+
+To let the non-root Server bind 80/443, the Server template applies `cap_drop: ALL`, adds back only `NET_BIND_SERVICE`, and intentionally omits `no-new-privileges` for Server; otherwise Linux suppresses the binary's `cap_net_bind_service` file capability. Do not re-add NNP without accounting for that boundary. In production, verify PID 1 remains non-root, `CapEff` contains only `0x400`, and real requests reach 80/443.
+
+Place the templates in a dedicated install directory and set that directory to `0711` (traversable but not listable by other users); do not apply this to an entire home directory. The one-shot `state-init` creates `data/server/certs` in empty bind mounts, transfers Server data and authorization files to UID/GID 65532, and enforces `0700`/`0600`. Removing that initializer or making a parent directory non-traversable prevents the non-root Server from creating SQLite, especially on NAS FUSE paths.
 :::

@@ -1,25 +1,33 @@
 # 核心概念
 
-## Server 与 Gateway
+## Server、Gateway 与公网入口
 
-同一 Server 进程始终包含两个内部监听器：管理监听器（默认 `127.0.0.1:8080`）提供控制台和 API；Gateway（默认 `127.0.0.1:8081`）按 HTTP `Host` 查找路由并代理到 SSH 回环端口。简易安装还启用原生公网 80/443 入口，由 Server 终止 HTTPS，并按 Host 把管理域名发送到管理处理器、把已启用的 HTTP 路由域名发送到 Gateway。
+同一 Server 进程包含管理监听器（默认 `127.0.0.1:8080`）和传统 Gateway（默认 `127.0.0.1:8081`）。简易安装还启用原生 HTTP/HTTPS 入口：主监听端口默认是 80/443，也可通过安装器改成本机其他端口。
 
-## Agent
+Gateway 根据进入请求的 **scheme、端口、Host 和路径** 选择已启用且已收敛的 Web 路由。路径采用最长前缀优先；`strip_path` 可在转发前移除匹配前缀。非默认 Web 公网端口由 Server 动态创建额外监听器。
 
-Agent 在 NAS 上运行，注册一次后把客户端凭据持久化到 `/data/agent.json`。它周期性拉取期望状态、探测本地服务、协调 OpenSSH `-R` 转发并回报观测状态。
+TCP/UDP 路由由 stream edge 在指定公网端口动态监听。TCP 进行字节转发；UDP 按来源地址建立会话，并把数据报封装到隧道内 TCP 连接。
 
-## Client
+## Agent 与 Client
 
-每个 Agent 注册为一个 Client。Client 有独立凭据与期望版本。若需要把大流量媒体与普通 Web 路由放在不同 SSH 主连接中，请运行两个 Agent/Client，而不是只填写不同 `tunnel_group`。
+Agent 在 NAS 上注册后把长期身份持久化到 `/data/agent.json`，周期性拉取期望状态、探测本地目标、协调 OpenSSH `-R` 转发、发送心跳并上报进程资源。每个注册 Agent 在 API 中是一个 Client。
 
-::: warning 当前限制
-`tunnel_group` 字段会被保存，但当前 Agent 使用一个 OpenSSH ControlMaster。需要真正的连接隔离时，请使用双 Agent 模板。
+::: warning 连接隔离
+`tunnel_group` 会被保存，但当前一个 Agent 只维护一个 OpenSSH ControlMaster。Web 与高流量媒体需要独立 SSH 主连接时，请运行两个 Agent/Client，并使用不同状态目录。
 :::
 
 ## Route
 
-HTTP 路由包含域名、本地目标、启用状态和自动分配的 VPS 回环端口。域名唯一且会规范化。WebUI 只创建 HTTP 路由；已有 TCP 记录仅作为控制平面兼容元数据展示，不代表公网监听。
+所有路由都有名称、Client、本地目标、启用状态、期望/观测 revision 和自动分配的 VPS 回环端口。
 
-## 期望与观测状态
+- Web 路由：`http` 或 `https`，必须有域名；可选路径前缀、去前缀和自定义公网端口。
+- Stream 路由：`tcp` 或 `udp`，不使用域名/路径，必须指定公网端口。
+- 同一 Web 端点由 `(协议, 域名, 公网端口, 路径前缀)` 唯一标识；同一 TCP/UDP 公网端口只能属于一条 stream 路由。
 
-路由写入只表示期望状态已改变。只有 Agent 报告相同 revision，才表示配置已收敛。健康状态也分为本地可达、SSH 转发、公网收敛三层。
+## 期望、观测与发布
+
+API 写入只改变期望状态。Agent 的 observed revision 必须与当前 desired revision **相等**、Tunnel 为 `up` 且心跳仍新鲜（90 秒窗口）后，路由才具备发布条件；落后表示尚未收敛，超前值会被 API 拒绝。Local、Tunnel、Public 分层展示，`published` 不等于公网 DNS、证书或防火墙一定正确。
+
+## 指标
+
+Server 在内存中累计请求/会话数、进出字节和近 60 分钟序列，并采样自身及 Agent 进程 CPU/RSS。当前删除路由不会立即清除已累计的 route ID 计数；Server 重启会清空全部指标。

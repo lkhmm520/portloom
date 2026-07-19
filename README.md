@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/public/logo.svg" width="92" alt="PortLoom logo" />
   <h1>PortLoom</h1>
-  <p><strong>用一条 Agent 命令，把内网 HTTP/HTTPS 服务安全发布到公网。</strong></p>
+  <p><strong>用一条 Agent 命令，把内网 Web、TCP 与 UDP 服务发布到公网。</strong></p>
   <p>面向 NAS、家庭实验室与小型自托管环境的反向 SSH 隧道控制平面。</p>
   <p><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
   <p>
@@ -15,7 +15,7 @@
 
 ---
 
-PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server 与受管 sshd，一台 NAS 或内网主机运行 Agent。Server 原生监听公网 80/443，使用 autocert HTTP-01 获取证书；默认路径不要求预先配置 Caddy、Nginx Proxy Manager 或修改宿主 OpenSSH。安装 Server 后，在 WebUI 生成一条 Agent 命令，再添加 HTTP 路由即可。
+PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server 与受管 sshd，一台 NAS 或内网主机运行 Agent。Server 原生监听公网 80/443，使用 autocert HTTP-01 获取证书；默认路径不要求预先配置 Caddy、Nginx Proxy Manager 或修改宿主 OpenSSH。安装 Server 后，在 WebUI 生成一条 Agent 命令，即可添加 HTTPS、HTTP、TCP 或 UDP 路由。
 
 内置公网入口支持四种路由协议：**HTTPS**（自动申请证书 + HTTP 跳转）、**HTTP**（纯明文发布，不申请证书）、**TCP** 与 **UDP**（发布指定的 VPS 公网端口，UDP 经隧道内数据报中继转发）。同一个域名可以同时挂多条路由：按路径前缀（如 `example.com/jellyfin`）、按自定义公网端口（如 `example.com:8443`）区分，也可以与管理域名共享（路径前缀方式）。
 
@@ -23,15 +23,14 @@ PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 
 
 ```text
                               公网 Docker 主机
-浏览器 ──HTTP/HTTPS──> PortLoom Server 原生入口 :80/:443
-                              ├─ 管理域名 ──> WebUI/API + SQLite
-                              └─ 路由域名 ──> PortLoom Gateway
-                                                   │
-                              授权                 │ 回环转发
-                               ▼                   ▼
-                        managed sshd :2222 <── Agent 发起 OpenSSH -R
-                                                   │
-内网 HTTP 服务 <────────────────────────────── Agent
+浏览器 ──HTTP/HTTPS──> PortLoom Web edge ──> Gateway ──┐
+TCP/UDP 客户端 ──────> PortLoom stream edge ───────────┤
+                              管理域名 ──> WebUI/API    │ 回环转发
+                              授权                      ▼
+                               ▼                 managed sshd :2222
+                                                   ▲
+                                                   │ Agent 主动 OpenSSH -R
+内网 HTTP/TCP/UDP 服务 <──────────────────────── Agent
                                             NAS / 内网 Docker 主机
 ```
 
@@ -42,16 +41,16 @@ PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 
 | **内置 HTTPS** | Server 使用 autocert HTTP-01，只为管理域名和已启用的 HTTPS 路由申请证书并持久化到 `/data/certs` |
 | **四协议路由** | HTTPS / HTTP / TCP / UDP；HTTP 不强制跳转 HTTPS，TCP/UDP 直接发布公网端口 |
 | **域名复用** | 同一域名支持多条路由：路径前缀、自定义公网端口、HTTP 与 HTTPS 并存 |
-| **流量与资源监控** | 仪表盘展示近 60 分钟流量曲线、每路由计数以及 Server/Agent 的 CPU 与内存占用 |
+| **流量与资源监控** | 仪表盘展示近 60 分钟流量曲线、总计数以及 Server/Agent 的 CPU 与内存；metrics API 另提供每路由计数 |
 | **受管 SSH** | 独立 sshd 容器仅允许公钥认证和回环远程转发，不修改宿主 sshd |
-| **分层状态** | 本地服务、SSH 隧道和 HTTP 公网发布状态分别展示 |
+| **分层状态** | 本地服务、SSH 隧道和公网 listener 状态分别展示 |
 | **小型控制面** | Go Server、Go Agent、SQLite，无外部数据库或 Docker socket |
 
 ## 五分钟开始
 
 ### 准备
 
-- 公网 VPS 与 NAS/内网主机均已安装 Docker Engine 24+ 和 Compose v2；
+- 公网 VPS 与 NAS/内网主机均可访问 Docker daemon，并使用 Compose v2；
 - 管理域名（例如 `portloom.example.com`）已解析到 VPS；
 - VPS 放行 TCP `80`、`443`、`2222`，且 `80/443` 未被占用；NAS 无需开放入站端口。
 
@@ -61,7 +60,7 @@ PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com
+./install-server.sh --domain portloom.example.com --version 0.4.0
 ```
 
 安装器只启动 `portloom-server` 与 `portloom-sshd`。Server 通过最小化的 `NET_BIND_SERVICE` capability 直接绑定 80/443，最后输出 WebUI 地址与随机管理员令牌。
@@ -74,14 +73,15 @@ chmod 0700 install-server.sh
 
 把 WebUI 生成的完整命令粘贴到 NAS 或内网 Docker 主机。Agent 安装器会生成独立 Ed25519 密钥、固定 Server 主机公钥、用一次性令牌注册并启动 Agent；注册成功后配置中不再保留该令牌。
 
-### 4. 在 WebUI 添加 HTTP 路由
+### 4. 在 WebUI 添加 HTTPS 路由
 
-进入 **Routes → Add HTTP route**，选择 Agent，填写公网域名、本地服务地址和端口，例如：
+进入 **Routes → Add route**，选择 Agent，协议使用默认 **HTTPS**，填写公网域名、本地服务地址和端口，例如：
 
 | 字段 | 示例 |
 | --- | --- |
 | Name | Jellyfin |
 | Client | home-nas |
+| Protocol | HTTPS |
 | Public domain | jellyfin.example.com |
 | Local host | 127.0.0.1 |
 | Local port | 8096 |
@@ -108,7 +108,7 @@ chmod 0700 install-server.sh
 | 受管 SSH 服务 | `ghcr.io/lkhmm520/portloom-sshd:latest` |
 | 文档站 | `ghcr.io/lkhmm520/portloom-docs:latest` |
 
-稳定版 `vX.Y.Z` Git Tag 会发布完整语义化版本、主/次版本、`sha-*` 和 `latest`；预发布不覆盖 `latest`，手动发布只生成 `edge` 与 `sha-*`。生产环境应固定完整版本。WebUI 仅在 `/api/v1/system` 返回安全镜像 Tag 时，才把同版本传给 Agent 安装器。
+`vX.Y.Z` Git Tag 先发布不可变的完整版本镜像；发布验收通过后，finalize 工作流才为稳定版本提升 `latest`、主版本与主次版本通道并创建 GitHub Release。预发布不会提升稳定通道。生产环境应固定完整版本。WebUI 仅在 `/api/v1/system` 返回安全镜像 Tag 时，才把同版本传给 Agent 安装器。
 
 ## 从源码运行 Server
 

@@ -1,42 +1,66 @@
 # Route management
 
-## Protocols
+## Four protocols
 
-| Protocol | Behavior |
+| Protocol | Public behavior |
 | --- | --- |
-| HTTPS | Published by domain (optional path prefix) with automatic ACME certificates; HTTP requests receive a 308 redirect |
-| HTTP | Published in plain text on the HTTP edge port by domain (optional path prefix); no certificate, no redirect |
-| TCP | Listens on the selected public VPS port and forwards bytes to the Agent's local service |
-| UDP | Listens on the selected public UDP port; datagrams are carried across the tunnel through a length-prefixed relay |
+| HTTPS | Route by domain, path, and port with automatic ACME certificates. HTTP receives a 308 redirect only when no plain-HTTP route matches the same Host |
+| HTTP | Publish in plaintext on the HTTP edge without certificate issuance or forced redirect |
+| TCP | Listen on an explicit public VPS TCP port and forward bytes to the Agent target |
+| UDP | Listen on an explicit public VPS UDP port and relay datagrams as length-prefixed frames inside the SSH tunnel |
 
-One domain can host multiple routes: different path prefixes (longest prefix wins), different public ports (multiple web routes of the same scheme may share one extra port), and HTTP alongside HTTPS. The management domain also accepts path-prefix routes (HTTPS on the default port only, and never `/api`, `/assets`, or `/healthz`).
+When upgrading an early database, v0.4 migrates legacy `http` rows to `https` to preserve the old automatic-TLS behavior. A newly created `http` route now means real plaintext HTTP.
 
-## Web route fields
+## Create in the WebUI
+
+1. Open **Routes** and click **Add route**; a new route defaults to **HTTPS**.
+2. Select Client and fill Name, protocol-specific public fields, Local host/port, Tunnel group, and Enabled.
+3. Save and wait for Local, Tunnel, and Public to converge. The WebUI refreshes once per second; the heartbeat publication window is about 90 seconds.
+4. Run a real end-to-end protocol test. `published` does not itself verify public DNS, firewalls, or a UDP target response.
+
+When editing an existing route, the WebUI locks Client and cannot directly move the route to another Agent. For a Client migration, record the configuration and plan a delete/recreate cutover window to avoid endpoint uniqueness conflicts.
+
+## Web routes
 
 | Field | Meaning |
 | --- | --- |
-| Name | Human-readable route name |
-| Client | Agent that carries the route |
 | Domain | Public DNS hostname; IPs, ports, single labels, and numeric final labels are rejected |
-| Path prefix | Optional prefix starting with `/`, such as `/jellyfin`; empty means the whole domain |
-| Strip path | Remove the prefix before forwarding, for apps without sub-path support |
-| Public port | Optional; empty means the default 80/443. Another port makes the Server open an extra listener |
-| Local host/port | Target reachable from the Agent host |
-| Tunnel group | Metadata today; use separate Agents for isolation |
-| Enabled | Included in desired state, Gateway lookup, and native certificate authorization |
+| Path prefix | Optional; `/` is normalized to empty. Must start with `/` and contain no empty, `.`, or `..` segment |
+| Strip path | Remove the prefix before proxying; requires a non-empty prefix |
+| Public port | empty uses the protocol's primary edge; explicit HTTP 80 / HTTPS 443 also normalize to the primary edge. Other allowed ports in 1–65535 create a dynamic extra TCP listener |
+| Local host/port | Target reachable by Agent. With host networking, `127.0.0.1` is the NAS host |
+| Tunnel group | Metadata today; use a separate Agent for connection isolation |
 
-TCP/UDP routes have no domain or path and require `Public port`. Agents use host networking, so `127.0.0.1` refers to the NAS host. A mapped host port or LAN address can target another container.
+A web endpoint is unique by `(protocol, domain, public port, path prefix)`, and longest path prefix wins. Multiple routes of the same scheme may share one extra port. HTTP and HTTPS cannot share the same extra port; API/WebUI rejects the write with 409 conflict. Public `conflict` is a defensive state for a legacy or otherwise inconsistent database.
 
-## Publishing and safe changes
+For example, `/media` matches only `/media` and `/media/...`, never `/mediabox`. With Strip path enabled, `/media/tv` becomes `/tv`, and an exact `/media` request becomes `/`. Prefix `/` is normalized to empty and therefore matches the whole hostname.
 
-Point the new hostname's A/AAAA record to the VPS, then enable the route. The route API and certificate authorization use the same strict public-DNS validation, so values that cannot receive a certificate—such as IPs, names with ports, or `localhost`—are rejected before they are saved. The native edge obtains ACME HTTP-01 certificates for **HTTPS** routes only; plain-HTTP routes never authorize certificates. Disabling the route removes future certificate authorization, while cached certificates remain under `/data/certs`.
+The management hostname can host a non-empty path prefix only on the primary HTTPS edge. It cannot use HTTP, a custom port, the root path, or a prefix under `/api`, `/assets`, or `/healthz`.
 
-Create and observe a route before switching an existing ingress, if any. Before deleting a route, restore its previous upstream. Validate Range, WebSocket, large-file, and long-lived request behavior when the application needs them.
+::: tip Applications on a sub-path
+`Strip path` changes only the request path sent upstream. It does not rewrite absolute response URLs, Cookie Path, or frontend asset URLs. Prefer a dedicated hostname when the application does not support sub-path deployment.
+:::
 
-## TCP / UDP publication
+## TCP / UDP routes
 
-The stream edge is enabled by default and binds `0.0.0.0`; set `TM_TCP_EDGE_BIND_HOST=off` to disable it or another literal IP to restrict the bind. Port conflicts and bind failures surface in the WebUI Public layer (`conflict` / `bind_error`). UDP sessions are keyed by public source address and expire after 60 idle seconds; because the encapsulation rides the TCP tunnel, it suits small and medium datagrams such as DNS, game traffic, or WireGuard handshakes.
+TCP/UDP routes have no domain, path, or Strip path and require Public port. One stream public port can belong to only one TCP/UDP route and cannot use control, Gateway, SSH, HTTP/HTTPS edge, or tunnel-pool (`TM_PORT_RANGE_START..END`) ports.
 
-## Traffic and resource metrics
+The stream edge binds `0.0.0.0` by default. Set `TM_TCP_EDGE_BIND_HOST=off` to disable it, or a literal IP such as `127.0.0.1` or `::` to restrict the bind. The WebUI disables new TCP/UDP routes when the edge is off.
 
-The dashboard shows the last 60 minutes of total traffic, request and byte counters, and CPU/memory usage of the Server and each Agent (reported with heartbeats). Metrics live in memory and reset when the Server restarts. The admin API is `GET /api/v1/metrics`.
+UDP sessions are keyed by public source address and expire after 60 idle seconds. The internal two-byte frame length field tops out at 65,535, but that is **not** a promised public UDP payload: ordinary IPv4/IPv6 UDP limits are usually 65,507/65,527 bytes, further constrained by path MTU and socket behavior. This is intended for small and medium datagrams such as DNS, game control traffic, or WireGuard handshakes, not native-UDP throughput or head-of-line-loss resistance. The stream manager currently has fixed limits of 1,024 active sessions/connections globally and 128 per route, with no public configuration knobs.
+
+## Status, DNS, and firewall
+
+- `waiting_agent`: revision/Tunnel/heartbeat has not converged (heartbeat freshness is 90 seconds);
+- `pending`: a dynamic listener is being reconciled;
+- `published`: PortLoom has built the public processing path;
+- `conflict` / `bind_error`: routes/schemes compete for the port or the OS bind failed;
+- `disabled`: the route is not enabled.
+
+`published` does not validate external DNS or firewall policy. Configure A/AAAA for web routes; allow TCP for custom web/TCP ports and UDP for UDP routes. Certificates are authorized only for enabled HTTPS hostnames. Disabling a route does not remove cached files under `/data/certs`.
+
+## Traffic and resources
+
+Dashboard's chart is the sum of inbound and outbound bytes in the latest 60 one-minute buckets. Requests, Bytes In, and Bytes Out are cumulative since Server start. Each TCP connection and UDP session counts as one request/event. Resource primary values are PortLoom process CPU and RSS: one saturated core is about 100% CPU, while the memory percentage in parentheses is host/container-namespace total memory use—not RSS as a percentage.
+
+`GET /api/v1/metrics` additionally returns per-route totals. Metrics are in memory and reset on Server restart. Currently, deleting a route does not immediately remove that route ID's accumulated counters from the metrics API. Agent resources arrive with sync/heartbeats, and the current UI does not mark resource samples stale.

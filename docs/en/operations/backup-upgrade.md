@@ -1,90 +1,143 @@
 # Backup, upgrade, and rollback
 
-## Back up
+## Backup scope
 
-The easy installer uses `~/.portloom/server` by default. Back up at least:
+The easy Server install defaults to `~/.portloom/server`. Before upgrade, preserve at least:
 
-- `server-data/`: the SQLite database, WAL/SHM, and the ACME cache under `certs/`;
-- `ssh-hostkeys/`: the Server SSH identity pinned by Agents;
-- `ssh-auth/`: the currently generated Agent authorization file;
-- `.env` and `compose.yml` (they contain sensitive data; protect backups with mode 0600/0700);
-- for a v0.2.x migration, `Caddyfile`, `caddy-data/`, and `caddy-config/`;
-- each Agent's `/data/agent.json`, SSH private key, and verified `known_hosts`.
+- `server-data/`: SQLite, WAL/SHM, and `certs/`;
+- `ssh-hostkeys/`: the SSH identity pinned by Agents;
+- `ssh-auth/`, `.env`, and `compose.yml`;
+- the **complete install directory** of every Agent, normally `~/.portloom/agent/`, including `data/`, `.env`, `compose.yml`, and the pinned `PORTLOOM_AGENT_IMAGE_ID`;
+- for a v0.2 Caddy migration: `Caddyfile`, `caddy-data/`, `caddy-config/`, and the exact image ID of every old running Compose container.
 
-Use SQLite online backup for zero downtime. Before copying `server-data/` directly, stop Server or capture the database, WAL, and SHM consistently. Do not copy only `portloom.db`, and do not omit `server-data/certs/` or `ssh-hostkeys/`.
+Agent `data/` alone is not installer-restorable. The installer fails closed when credentials exist without `.env` and `compose.yml`. Preserve original 0700/0600 permissions and verify all files in an isolated backup location. Stop Server before a raw SQLite copy, or use SQLite online backup while keeping the database/WAL/SHM consistent. Never copy only `portloom.db`.
 
-## Routine upgrade
-
-For manually maintained Compose deployments, pin the new image tags and upgrade one component at a time:
+Before migration, record the image IDs actually used by current containers:
 
 ```bash
-docker compose pull
-docker compose up -d --pull never
-docker compose ps
-docker compose logs --tail=100
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml ps -q \
+  | xargs -r docker inspect --format '{{.Name}} {{.Image}}'
 ```
 
-Upgrade Server first, then ordinary Web Agents, then high-throughput media Agents. Verify heartbeat, revisions, HTTPS, and public traffic after each step.
+::: danger v0.4 database and Agent compatibility
+The first v0.4 start adds route fields/indexes and converts early legacy `http` rows to `https` to preserve old automatic-TLS behavior. A v0.3.2 Agent accepts only `http|tcp` and rejects migrated `https` routes; a v0.3.2 Gateway cannot publish those rows either.
 
-### Upgrade a v0.3 native-edge easy install
+Installer `native-upgrade-backup-*` directories contain only `.env` and `compose.yml`; they **do not back up the database**. A v0.3.x rollback must restore a consistent pre-v0.4 `server-data/` snapshot as well as old images.
+:::
 
-For an easy install already using the v0.3 native edge, rerun the installer with the original domain and ports plus a pinned target version whose image reference differs from the current one:
+## v0.3.x → v0.4.0 requires a maintenance window
 
-```bash
-./install-server.sh --domain portloom.example.com --version 0.3.1
-```
+Current `install-agent.sh` supports same-version continuation/recovery only and fails closed when an existing home receives another `--version`. The WebUI also locks Client ownership while editing a route. Therefore v0.4.0 has **no installer-managed, one-command, zero-downtime Agent cross-version upgrade**. Do not upgrade Server first and leave old Agents running for long; do not delete `agent.json` or keys or guess immutable image IDs.
 
-To keep reruns and rollback valid when mutable tags such as `latest` move locally, the installer persists immutable Server/sshd image IDs and Compose uses only those IDs; unchanged references are not pulled again. Upgrades must use a new pinned version. When image tags change, the installer fully generates candidate files before creating `native-upgrade-backup-0.3.1/` (the suffix is the target version), containing the pre-upgrade `.env` and `compose.yml`. The new version succeeds only after a real HTTPS `/healthz` check. On failure, the installer restores old Compose and canonical files with the previous immutable IDs and verifies old HTTPS. If automatic restoration cannot be verified, inspect the service manually as reported. The backup directory remains after success; archive or remove it after the release is stable.
+The conservative procedure below causes a short interruption. Commands assume the default Agent home; replace it with the real absolute path for custom homes:
 
-## Migrate a v0.2.x easy install from Caddy to the v0.3.0 native edge
+1. Quiesce writes; back up Server and every complete Agent install directory; record all route fields, old ports, and image IDs.
+2. From the old Agent home, run Compose `down` to remove the fixed-name old container while preserving bind-mounted data:
 
-The old easy install includes Caddy. A plain `docker compose pull/up` neither replaces its generated files nor releases ports 80/443. Back up the complete installation directory, then request the migration explicitly:
+   ```bash
+   cd ~/.portloom/agent
+   docker compose --env-file .env -f compose.yml down
+   ```
+
+3. Upgrade Server with the original hostname, Server home, and ports.
+4. After v0.4 Server is ready, create a new name under **Add Agent** and install a fresh v0.4 Agent into a different `--home`. The old container must already be down because generated Compose fixes `container_name: portloom-agent`.
+5. The WebUI cannot change an existing route's Client. Record and delete each old endpoint, recreate the same configuration on the new Agent, wait for Local/Tunnel/Public convergence, and run real end-to-end tests.
+6. Keep the pre-upgrade database, complete old Agent home, and image IDs through the rollback window.
+
+If uninterrupted cutover is required, wait for a tested Agent cross-version transaction instead of improvising an image-ID switch.
+
+## Server upgrade command
+
+Download the current installer, repeat original options, and pin the new release:
 
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
+./install-server.sh --domain portloom.example.com --version 0.4.0
+```
+
+A non-default install must repeat every original value. Gateway has no CLI flag and uses an environment variable:
+
+```bash
+PORTLOOM_GATEWAY_PORT=<original-gateway-port> \
 ./install-server.sh \
   --domain portloom.example.com \
-  --version 0.3.0 \
+  --home <original-install-directory> \
+  --web-port <original-web-port> \
+  --ssh-port <original-ssh-port> \
+  --http-port <original-http-edge-port> \
+  --https-port <original-https-edge-port> \
+  --version 0.4.0
+```
+
+The installer resolves and persists immutable image IDs, writes candidate configuration, creates `native-upgrade-backup-0.4.0/`, runs Compose `up -d`, and requests the real HTTPS `/healthz`. Failure restores previous configuration and image IDs. An existing backup directory with the same name blocks another attempt.
+
+On the first migration from a v0.3 install with no stream-edge value, `--disable-tcp-edge` may write `off`. A non-empty value in an existing `.env` is preserved, so later rerun flags are not a general toggle; back up and review the installed `.env`/Compose before changing it. When stream edge is enabled, allow only actual route ports—not a broad range.
+
+After upgrade:
+
+```bash
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml ps
+docker compose --env-file .env -f compose.yml logs --tail=200 server
+curl -I https://portloom.example.com/healthz
+```
+
+Confirm old web rows appear as HTTPS after migration, `/api/v1/system` reports 0.4.0, Dashboard metrics render, and test true plaintext HTTP, HTTPS, TCP, UDP, path, and extra-port routes.
+
+## Migrating a v0.2.x Caddy install
+
+```bash
+./install-server.sh \
+  --domain portloom.example.com \
+  --version 0.4.0 \
   --migrate-native-edge
 ```
 
-Use the original domain, Web/SSH/Gateway ports, and the old Caddy 80/443 ports, plus a pinned v0.3 `--version` whose Server image reference differs from the old one. The installer rejects replacing a legacy deployment through the same mutable `latest` reference so rollback still points to the old image. If old Caddy uses custom local ingress ports, prefix the command with matching `PORTLOOM_HTTP_PORT` and `PORTLOOM_HTTPS_PORT` values; public 80/443 must be NAT/forwarded to those local ports, and HTTP redirects include the custom HTTPS port. The installer:
+Repeat the original hostname and all original ports. Back up Caddy volumes, complete Server data, and old Agent state, and record exact image IDs for the old Server/sshd/Caddy containers. The installer saves old `.env`, `compose.yml`, and `Caddyfile`, stops Caddy, starts native edges, and verifies HTTPS. That automatic configuration backup contains neither the database nor old images. Public port 80 must reach the configured HTTP edge.
 
-1. refuses a legacy Caddy installation unless `--migrate-native-edge` is explicit;
-2. fully generates candidate files, then atomically creates a mode-0700 `migration-backup-v0.3.0/` directory containing the original `.env`, `compose.yml`, and `Caddyfile`;
-3. generates the new two-service `portloom-server` plus `portloom-sshd` configuration;
-4. stops old Caddy before starting the native edge, then starts with `--remove-orphans`;
-5. waits for Server health and makes a real loopback HTTPS request to the management hostname. It reports success only after certificate issuance, the 443 listener, and `/healthz` work. On failure it stops the new configuration, restores old Compose and the three canonical files, and verifies old HTTPS. If automatic restoration cannot be verified, the installer reports that explicitly and requires manual service inspection.
+## Rollback
 
-Verify the migration:
+Preserve a failed-state copy before any rollback, then stop current Compose. Never erase `server-data`, `ssh-hostkeys`, `ssh-auth`, or Agent data.
 
-```bash
-cd ~/.portloom/server
-docker compose ps
-docker compose logs --tail=100 server
-curl -I http://portloom.example.com
-curl -I https://portloom.example.com
-```
+- **v0.4 → v0.3.x:** restore `.env` and `compose.yml` from `native-upgrade-backup-0.4.0/` and a consistent pre-upgrade `server-data/`. Pass the recorded immutable IDs through both the v0.3 `PORTLOOM_*_IMAGE` contract and the v0.4 `PORTLOOM_*_IMAGE_ID` contract so a locally moved tag cannot be selected:
 
-Require `portloom-caddy` to be absent, HTTP to redirect to HTTPS, and the WebUI certificate to be valid. Create one HTTP route and verify hostname-specific issuance and forwarding.
+  ```bash
+  OLD_SERVER_IMAGE_ID=sha256:replace-with-recorded-server-id
+  OLD_SSHD_IMAGE_ID=sha256:replace-with-recorded-sshd-id
+  for image_id in "$OLD_SERVER_IMAGE_ID" "$OLD_SSHD_IMAGE_ID"; do
+    printf '%s\n' "$image_id" | grep -Eq '^sha256:[0-9a-f]{64}$' || {
+      echo 'invalid old image ID' >&2
+      exit 1
+    }
+  done
+  docker image inspect "$OLD_SERVER_IMAGE_ID" "$OLD_SSHD_IMAGE_ID" >/dev/null
+  PORTLOOM_SERVER_IMAGE="$OLD_SERVER_IMAGE_ID" \
+  PORTLOOM_SSHD_IMAGE="$OLD_SSHD_IMAGE_ID" \
+  PORTLOOM_SERVER_IMAGE_ID="$OLD_SERVER_IMAGE_ID" \
+  PORTLOOM_SSHD_IMAGE_ID="$OLD_SSHD_IMAGE_ID" \
+    docker compose --env-file .env -f compose.yml up -d --pull never
+  ```
 
-## Roll back the v0.3.0 native-edge migration
+  Stop and `down` the new Agent, then start the old Agent from its complete old install directory with `--pull never`:
 
-If automatic restoration fails or a manual rollback is required, stop the new configuration and restore the three installer backups:
+  ```bash
+  OLD_AGENT_HOME=/absolute/path/to/complete-old-agent-install
+  case "$OLD_AGENT_HOME" in /*) ;; *) echo 'OLD_AGENT_HOME must be absolute' >&2; exit 1;; esac
+  test -f "$OLD_AGENT_HOME/.env" && test -f "$OLD_AGENT_HOME/compose.yml" || {
+    echo 'OLD_AGENT_HOME is not a complete Agent install directory' >&2
+    exit 1
+  }
+  cd "$OLD_AGENT_HOME"
+  docker compose --env-file .env -f compose.yml up -d --pull never
+  ```
 
-```bash
-cd ~/.portloom/server
-docker compose --env-file .env -f compose.yml down --remove-orphans
-cp migration-backup-v0.3.0/.env .env
-cp migration-backup-v0.3.0/compose.yml compose.yml
-cp migration-backup-v0.3.0/Caddyfile Caddyfile
-docker compose --env-file .env -f compose.yml up -d --pull never
-docker compose ps
-```
+- **v0.2 Caddy migration rollback:** restore `.env`, `compose.yml`, and `Caddyfile` from `migration-backup-v0.3.0/`, retained Caddy volumes, **a consistent pre-migration `server-data/`, and matching old Agent state**. Pin every image reference in old Compose to the recorded pre-migration `sha256:` ID, verify each locally with `docker image inspect <sha256-ID>`, then run from the original project directory:
 
-Keep `server-data/`, `ssh-hostkeys/`, `ssh-auth/`, `caddy-data/`, and `caddy-config/`; never empty them during rollback. After old Caddy owns 80/443 again, verify the WebUI and existing routes.
+  ```bash
+  docker compose --env-file .env -f compose.yml config
+  docker compose --env-file .env -f compose.yml up -d --pull never
+  ```
 
-## Ordinary version rollback
-
-Pin the previous image tags and recreate from the backed-up Compose configuration with `up -d --pull never`. If the old image is absent locally, stop and restore the correct image manually rather than allowing Compose to pull a mutable tag implicitly. Back up before database changes. An ingress rollback must also restore the previous public ingress and upstream mapping; starting an old tunnel container alone is insufficient.
+  Abort if any old image or pre-migration database backup is unavailable and restore it from a trusted archive. Never pull a moved `latest` as an old stack. Finally verify 80/443, WebUI, existing routes, and old Agent heartbeats. Installer automatic edge-configuration restore is not a database rollback.

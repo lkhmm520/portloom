@@ -77,7 +77,7 @@ const enTheme: DefaultTheme.Config = {
 export default defineConfig({
   title: 'PortLoom', description: '稳定、可靠、快速的自托管隧道代理', lang: 'zh-CN',
   base: docsBase, cleanUrls: true,
-  srcExclude: ['WORKPLAN.md', 'architecture.md', 'deployment.md'],
+  srcExclude: ['WORKPLAN.md', 'architecture.md', 'deployment.md', 'FEEDBACK-BACKLOG.md'],
   lastUpdated: process.env.DOCS_LAST_UPDATED != 'false',
   sitemap: { hostname: process.env.DOCS_ORIGIN || 'https://docs.961121.xyz/' },
   head: [

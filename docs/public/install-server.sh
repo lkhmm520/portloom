@@ -387,7 +387,7 @@ if [ "$activation_failed" = true ]; then
     (cd "$home" && docker compose --project-directory "$home" --env-file .env -f compose.yml down --remove-orphans) 9>&- || rollback_failed=true
     if ! restore_native_files "$backup_dir"; then
       rollback_failed=true
-    elif ! (cd "$home" && PORTLOOM_SERVER_IMAGE_ID="$previous_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$previous_sshd_image_id" docker compose --project-directory "$home" --env-file .env -f compose.yml up -d --pull never) 9>&-; then
+    elif ! (cd "$home" && PORTLOOM_SERVER_IMAGE="$previous_server_image_id" PORTLOOM_SSHD_IMAGE="$previous_sshd_image_id" PORTLOOM_SERVER_IMAGE_ID="$previous_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$previous_sshd_image_id" docker compose --project-directory "$home" --env-file .env -f compose.yml up -d --pull never) 9>&-; then
       rollback_failed=true
     elif ! verify_public_https; then
       rollback_failed=true
@@ -400,10 +400,20 @@ if [ "$activation_failed" = true ]; then
   fi
   exit 1
 fi
-printf '\nPortLoom Server is installed.\nWebUI: https://%s\nAdministrator token: %s\nFiles: %s\n\n' "$domain" "$admin_token" "$home"
-printf 'Open TCP %s, %s and %s on the public-host firewall. Keep .env private.\n' "$edge_http_port" "$edge_https_port" "$ssh_port"
-if [ -n "$tcp_edge_bind_host" ]; then
-  printf 'TCP Edge is enabled on %s; open only the public ports explicitly configured in WebUI.\n' "$tcp_edge_bind_host"
-else
-  printf 'TCP Edge is disabled. Rerun this installer with --enable-tcp-edge to opt in.\n'
+webui_url="https://$domain"
+if [ "$edge_https_port" != 443 ]; then
+  webui_url="${webui_url}:$edge_https_port"
 fi
+printf '\nPortLoom Server is installed.\nWebUI: %s\nAdministrator token: %s\nFiles: %s\n\n' "$webui_url" "$admin_token" "$home"
+printf 'Open TCP %s, %s and %s on the public-host firewall. Keep .env private.\n' "$edge_http_port" "$edge_https_port" "$ssh_port"
+case "$tcp_edge_bind_host" in
+  off)
+    printf 'TCP/UDP stream edge is disabled.\n'
+    ;;
+  '')
+    printf 'TCP/UDP stream edge is enabled on 0.0.0.0; open only the public ports explicitly configured in WebUI.\n'
+    ;;
+  *)
+    printf 'TCP/UDP stream edge is enabled on %s; open only the public ports explicitly configured in WebUI.\n' "$tcp_edge_bind_host"
+    ;;
+esac

@@ -29,8 +29,12 @@ grep -q 'TM_EDGE_HTTP_ADDR: :\${PORTLOOM_HTTP_PORT}' "$server"
 grep -q 'TM_EDGE_HTTPS_ADDR: :\${PORTLOOM_HTTPS_PORT}' "$server"
 grep -q 'TM_HEALTHCHECK_URL: http://127.0.0.1:\${PORTLOOM_WEB_PORT}/healthz' "$server"
 grep -q 'cap_add: \[NET_BIND_SERVICE\]' "$server"
-! grep -q 'cap_add:.*NET_BIND_SERVICE' "$repo/deploy/server/docker-compose.yml"
-! grep -q 'cap_add:.*NET_BIND_SERVICE' "$repo/examples/docker-compose.server.yml"
+grep -q 'cap_add: \[NET_BIND_SERVICE\]' "$repo/deploy/server/docker-compose.yml"
+! grep -A60 '^  server:' "$repo/deploy/server/docker-compose.yml" | grep -q 'no-new-privileges:true'
+grep -q '^  server-data-init:' "$repo/deploy/server/docker-compose.yml"
+grep -A30 '^  server:' "$repo/deploy/server/docker-compose.yml" | grep -q 'server-data-init: { condition: service_completed_successfully }'
+grep -q 'cap_add: \[NET_BIND_SERVICE\]' "$repo/examples/docker-compose.server.yml"
+! grep -A40 '^  server:' "$repo/examples/docker-compose.server.yml" | grep -q 'no-new-privileges:true'
 ! grep -q 'container_name: portloom-caddy' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED: "true"' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED=true' "$agent"
@@ -108,6 +112,10 @@ if [ "${1:-}" = inspect ]; then
   exit 0
 fi
 if [ "${1:-}" = compose ]; then
+  if [[ " $* " == *' up '* ]]; then
+    printf 'COMPOSE_ENV PORTLOOM_SERVER_IMAGE=%s PORTLOOM_SSHD_IMAGE=%s PORTLOOM_SERVER_IMAGE_ID=%s PORTLOOM_SSHD_IMAGE_ID=%s\n' \
+      "${PORTLOOM_SERVER_IMAGE-}" "${PORTLOOM_SSHD_IMAGE-}" "${PORTLOOM_SERVER_IMAGE_ID-}" "${PORTLOOM_SSHD_IMAGE_ID-}" >> "$FAKE_DOCKER_LOG"
+  fi
   if [[ " $* " == *' up '* ]] && [ -n "${FAKE_AGENT_READY:-}" ]; then
     mkdir -p "$PWD/data"
     printf '{}\n' > "$PWD/data/agent.json"
@@ -193,12 +201,18 @@ expect_reject 'another Server installation is already running' env PORTLOOM_HOME
 flock -u 7
 exec 7>&-
 
-PORTLOOM_HOME="$tmp/server-home" "$server" --domain loom.example.com >/dev/null
+fresh_server_output=$(PORTLOOM_HOME="$tmp/server-home" "$server" --domain loom.example.com)
+printf '%s' "$fresh_server_output" | grep -Fq 'WebUI: https://loom.example.com' || fail "default WebUI URL is wrong: $fresh_server_output"
+printf '%s' "$fresh_server_output" | grep -Fq 'TCP/UDP stream edge is enabled on 0.0.0.0' || fail "default stream-edge status is wrong: $fresh_server_output"
 admin_before=$(env_value "$tmp/server-home/.env" TM_ADMIN_TOKEN)
 server_image_id=$(env_value "$tmp/server-home/.env" PORTLOOM_SERVER_IMAGE_ID)
 sshd_image_id=$(env_value "$tmp/server-home/.env" PORTLOOM_SSHD_IMAGE_ID)
 [[ "$server_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'fresh Server install did not persist the immutable Server image ID'
 [[ "$sshd_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'fresh Server install did not persist the immutable SSHD image ID'
+
+custom_server_output=$(PORTLOOM_HOME="$tmp/server-custom-output" "$server" --domain loom.example.com --https-port 8443 --disable-tcp-edge)
+printf '%s' "$custom_server_output" | grep -Fq 'WebUI: https://loom.example.com:8443' || fail "custom WebUI URL is wrong: $custom_server_output"
+printf '%s' "$custom_server_output" | grep -Fq 'TCP/UDP stream edge is disabled.' || fail "disabled stream-edge status is wrong: $custom_server_output"
 printf 'existing-agent-key\n' > "$tmp/server-home/ssh-auth/authorized_keys"
 : > "$FAKE_DOCKER_LOG"
 PORTLOOM_HOME="$tmp/server-home" FAKE_SERVER_IMAGE_ID="sha256:$(printf 'd%.0s' {1..64})" FAKE_SSHD_IMAGE_ID="sha256:$(printf 'e%.0s' {1..64})" "$server" --domain loom.example.com >/dev/null
@@ -247,6 +261,9 @@ printf '%s' "$native_upgrade_output" | grep -Fq 'native HTTPS edge did not becom
 [ "$(env_value "$native_upgrade_fail/.env" PORTLOOM_SERVER_IMAGE)" = 'ghcr.io/lkhmm520/portloom-server:0.3.1' ] || fail 'failed native upgrade did not restore previous image configuration'
 [ ! -e "$native_upgrade_fail/native-upgrade-backup-0.3.2" ] || fail 'failed native upgrade left a retry-blocking backup directory'
 grep -q -- "compose --project-directory $native_upgrade_fail --env-file .env -f compose.yml up -d --pull never" "$FAKE_DOCKER_LOG" || fail 'native upgrade rollback allowed an implicit image pull'
+old_server_id="sha256:$(printf 'a%.0s' {1..64})"
+old_sshd_id="sha256:$(printf 'c%.0s' {1..64})"
+grep -q "COMPOSE_ENV PORTLOOM_SERVER_IMAGE=$old_server_id PORTLOOM_SSHD_IMAGE=$old_sshd_id PORTLOOM_SERVER_IMAGE_ID=$old_server_id PORTLOOM_SSHD_IMAGE_ID=$old_sshd_id" "$FAKE_DOCKER_LOG" || fail 'native upgrade rollback did not pin both v0.3 and v0.4 image variable contracts to previous immutable IDs'
 grep -q '^existing-agent-key$' "$tmp/server-home/ssh-auth/authorized_keys" || fail 'server rerun replaced authorized_keys'
 [ "$(stat -c %a "$tmp/server-home")" = 711 ] || fail 'server install root must be traverse-only for bind-mounted container UIDs'
 for dir in "$tmp/server-home/server-data" "$tmp/server-home/server-data/certs" "$tmp/server-home/ssh-auth"; do

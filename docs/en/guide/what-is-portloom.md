@@ -1,25 +1,37 @@
 # What is PortLoom?
 
-PortLoom is a self-hosted tunnel proxy. It publishes web services from a home NAS or private network through a Docker host with a public address.
+PortLoom is a reverse-SSH tunnel control plane for NAS, homelab, and small self-hosted deployments. Server and managed sshd run on a public host. Agent runs inside the private network and connects outbound, so the NAS router needs no inbound port.
 
-| Location | Install | Responsibility |
+| Location | Components | Responsibility |
 | --- | --- | --- |
-| Public VPS or cloud host | PortLoom Server + managed sshd | WebUI, management API, native HTTPS edge, and tunnel entry |
-| NAS or internal server | PortLoom Agent | Connects outbound to Server and forwards traffic to local services |
-
-The Agent needs only outbound HTTPS and SSH access to Server. You do not open an inbound port on the NAS router.
+| Public VPS/cloud host | PortLoom Server + managed sshd | WebUI, API, native HTTP/HTTPS edge, TCP/UDP listeners, and SSH tunnel entry |
+| NAS/internal host | PortLoom Agent | Pull desired routes, probe local services, maintain reverse forwards, and report state/resources |
 
 ```text
-Browser ──HTTPS──> PortLoom Server native edge/Gateway
-                              │ established encrypted reverse tunnel
-                              ▼
-                    PortLoom Agent → internal service
+Web request ──HTTP/HTTPS──> native edge ──Gateway────┐
+TCP/UDP client ───────────> Server stream edge ─────┤
+                                                      │ VPS loopback port
+                                                      ▼
+                                               managed sshd :2222
+                                                      ▲
+                                                      │ outbound OpenSSH -R
+Internal service <────────────────────── Agent <──────┘
 ```
 
-The easy install needs no Caddy: Server binds 80/443, manages certificates with autocert HTTP-01, and authorizes only the management hostname and enabled HTTP route hostnames.
+## What v0.4 provides
 
-After installation, add an Agent in the WebUI, run its generated command, and create HTTP routes with a local address, port, and public hostname.
+- **HTTPS** routes by domain and optional path prefix with automatic ACME certificates. If no plain-HTTP route matches, HTTP for a host with HTTPS enabled receives a 308 redirect.
+- **HTTP** routes in plaintext without certificate issuance or forced redirect.
+- **TCP / UDP** routes on an explicit public VPS port. UDP datagrams use a length-prefixed relay inside the SSH tunnel.
+- **Endpoint reuse** through path prefixes and custom public ports; safe HTTPS path routes may also share the management hostname.
+- **Observability** for three-layer health, 60-minute traffic totals, and Server/Agent CPU and memory; the metrics API also exposes per-route counters.
+- **Safe enrollment** through a one-time command with a pinned SSH host key; unused enrollment tokens can be revoked in the console.
 
-This release fully manages hostname-based HTTP/HTTPS routes. TCP fields are compatibility metadata only; the built-in edge and WebUI create no public TCP listeners. Server uses one SQLite database and is not an active-active cluster.
+The default install needs no Caddy, Nginx, or NPM. Server owns 80/443 and manages certificates with autocert HTTP-01. Existing ingress can still integrate through the legacy 8080/8081 upstreams.
 
-Existing Caddy, Nginx, or Nginx Proxy Manager can remain as an advanced compatibility ingress using 8080/8081. See [Reverse proxy integration](/en/install/reverse-proxy).
+## Current boundaries
+
+- Server uses one SQLite database and is designed for a single writer, not active/active operation.
+- Each Agent currently uses one OpenSSH ControlMaster. `tunnel_group` remains metadata; run multiple Agents/Clients for connection isolation.
+- UDP is encapsulated over the TCP-based SSH tunnel and is intended for small and medium datagrams, not native-UDP throughput.
+- Traffic and resource metrics are in memory and reset when Server restarts.

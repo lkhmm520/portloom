@@ -89,8 +89,10 @@ clients=$(curl --noproxy '*' -fsS -H "Authorization: Bearer $admin_token" "$base
 agent_id=$(printf '%s' "$clients" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d)==1; print(d[0]["id"])')
 printf 'installer-generated-flow\n' > "$visible_tmp/backend.txt"
 python3 -m http.server "$backend_port" --bind 127.0.0.1 --directory "$visible_tmp" >/dev/null 2>&1 & backend_pid=$!
-payload=$(AGENT_ID="$agent_id" BACKEND_PORT="$backend_port" python3 -c 'import json,os; print(json.dumps({"client_id":os.environ["AGENT_ID"],"name":"installer-backend","protocol":"http","domain":"installer-route.test","local_host":"127.0.0.1","local_port":int(os.environ["BACKEND_PORT"]),"tunnel_group":"web","enabled":True}))')
+payload=$(AGENT_ID="$agent_id" BACKEND_PORT="$backend_port" python3 -c 'import json,os; print(json.dumps({"client_id":os.environ["AGENT_ID"],"name":"installer-backend","protocol":"https","domain":"installer-route.test","local_host":"127.0.0.1","local_port":int(os.environ["BACKEND_PORT"]),"tunnel_group":"web","enabled":True}))')
 curl --noproxy '*' -fsS -X POST -H "Authorization: Bearer $admin_token" -H 'Content-Type: application/json' -d "$payload" "$base/api/v1/routes" >/dev/null
+plain_payload=$(AGENT_ID="$agent_id" BACKEND_PORT="$backend_port" python3 -c 'import json,os; print(json.dumps({"client_id":os.environ["AGENT_ID"],"name":"installer-plain","protocol":"http","domain":"installer-plain.test","local_host":"127.0.0.1","local_port":int(os.environ["BACKEND_PORT"]),"tunnel_group":"web","enabled":True}))')
+curl --noproxy '*' -fsS -X POST -H "Authorization: Bearer $admin_token" -H 'Content-Type: application/json' -d "$plain_payload" "$base/api/v1/routes" >/dev/null
 check_route() { curl --noproxy '*' -fsS -H 'Host: installer-route.test' "http://127.0.0.1:$gateway_port/backend.txt" 2>/dev/null | grep -q installer-generated-flow; }
 for _ in $(seq 1 120); do check_route && break; sleep 0.25; done
 check_route
@@ -115,9 +117,13 @@ PY
 check_control_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "$domain:$edge_http_port:127.0.0.1" "http://$domain:$edge_http_port/healthz")" = 308 ]; }
 check_route_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "installer-route.test:$edge_http_port:127.0.0.1" "http://installer-route.test:$edge_http_port/backend.txt")" = 308 ]; }
 check_unknown_edge() { [ "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --resolve "unknown-route.test:$edge_http_port:127.0.0.1" "http://unknown-route.test:$edge_http_port/")" = 404 ]; }
+# Plain-HTTP routes are served directly on the HTTP edge without a redirect.
+check_plain_edge() { curl --noproxy '*' -fsS --resolve "installer-plain.test:$edge_http_port:127.0.0.1" "http://installer-plain.test:$edge_http_port/backend.txt" 2>/dev/null | grep -q installer-generated-flow; }
 check_control_edge
 check_route_edge
 check_unknown_edge
+for _ in $(seq 1 120); do check_plain_edge && break; sleep 0.25; done
+check_plain_edge
 curl --noproxy '*' -sS -D - -o /dev/null --resolve "$domain:$edge_http_port:127.0.0.1" "http://$domain:$edge_http_port/healthz" | tr -d '\r' | grep -Fqi "Location: https://$domain:$edge_https_port/healthz"
 curl --noproxy '*' -sS -D - -o /dev/null --resolve "installer-route.test:$edge_http_port:127.0.0.1" "http://installer-route.test:$edge_http_port/backend.txt" | tr -d '\r' | grep -Fqi "Location: https://installer-route.test:$edge_https_port/backend.txt"
 docker restart portloom-agent >/dev/null

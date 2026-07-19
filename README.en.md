@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/public/logo.svg" width="92" alt="PortLoom logo" />
   <h1>PortLoom</h1>
-  <p><strong>Publish internal HTTP/HTTPS services safely with one generated Agent command.</strong></p>
+  <p><strong>Publish internal web, TCP, and UDP services with one generated Agent command.</strong></p>
   <p>A reverse-SSH tunnel control plane for NAS, homelab, and small self-hosted environments.</p>
   <p><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
   <p>
@@ -15,7 +15,7 @@
 
 ---
 
-PortLoom's default path needs two Linux hosts with Docker Compose: a public VPS running Server and managed sshd, and a NAS or internal host running Agent. Server natively listens on public ports 80/443 and obtains certificates with autocert HTTP-01; the default path needs no Caddy, Nginx Proxy Manager, or host-OpenSSH changes. Install Server, generate one Agent command in the WebUI, then add an HTTP route.
+PortLoom's default path needs two Linux hosts with Docker Compose: a public VPS running Server and managed sshd, and a NAS or internal host running Agent. Server natively listens on public ports 80/443 and obtains certificates with autocert HTTP-01; the default path needs no Caddy, Nginx Proxy Manager, or host-OpenSSH changes. Install Server, generate one Agent command in the WebUI, then add HTTPS, HTTP, TCP, or UDP routes.
 
 The built-in public ingress supports four route protocols: **HTTPS** (automatic certificates plus HTTP redirect), **HTTP** (plain-text publishing without a certificate), and **TCP**/**UDP** (dedicated public VPS ports; UDP is carried across the tunnel through a datagram relay). One domain can host multiple routes at the same time: split by path prefix (such as `example.com/jellyfin`), by custom public port (such as `example.com:8443`), or shared with the management domain via a path prefix.
 
@@ -23,15 +23,14 @@ The built-in public ingress supports four route protocols: **HTTPS** (automatic 
 
 ```text
                                Public Docker host
-Browser ──HTTP/HTTPS──> PortLoom Server native edge :80/:443
-                               ├─ management host ──> WebUI/API + SQLite
-                               └─ route host ───────> PortLoom Gateway
-                                                          │
-                               authorization              │ loopback forwarding
-                                    ▼                     ▼
-                             managed sshd :2222 <── Agent initiates OpenSSH -R
-                                                          │
-Internal HTTP service <─────────────────────────────── Agent
+Browser ──HTTP/HTTPS──> PortLoom web edge ──> Gateway ─────┐
+TCP/UDP client ───────> PortLoom stream edge ──────────────┤
+                               management host ──> WebUI/API│ loopback forwarding
+                               authorization                ▼
+                                    ▼                managed sshd :2222
+                                                          ▲
+                                                          │ Agent initiates OpenSSH -R
+Internal HTTP/TCP/UDP service <──────────────────────── Agent
                                                 NAS / internal Docker host
 ```
 
@@ -39,16 +38,19 @@ Internal HTTP service <───────────────────
 | --- | --- |
 | **Two-host setup** | Install the Server stack publicly and only Agent internally |
 | **One Agent command** | The WebUI generates a shell-safe command with a one-time token, pinned host key, and matching version |
-| **Built-in HTTPS** | Server uses autocert HTTP-01, authorizes only the management host and enabled HTTP routes, and persists certificates in `/data/certs` |
+| **Built-in HTTPS** | Server uses autocert HTTP-01, authorizes only the management host and enabled HTTPS routes, and persists certificates in `/data/certs` |
+| **Four protocols** | HTTPS / HTTP / TCP / UDP; plain HTTP is not forced to TLS, while TCP/UDP publish explicit public ports |
+| **Endpoint reuse** | Reuse a hostname with path prefixes, custom public ports, and HTTP/HTTPS side by side |
+| **Traffic and resources** | Dashboard shows a 60-minute series, totals, and Server/Agent CPU and memory; the metrics API also exposes per-route counters |
 | **Managed SSH** | A separate sshd container permits public-key loopback remote forwarding only and leaves host sshd unchanged |
-| **Layered status** | Local service, SSH tunnel, and HTTP public-publishing state remain separate |
+| **Layered status** | Local service, SSH tunnel, and public-listener state remain separate |
 | **Small control plane** | Go Server, Go Agent, SQLite, no external database or Docker socket |
 
 ## Five-minute start
 
 ### Requirements
 
-- Docker Engine 24+ and Compose v2 on the public VPS and the NAS/internal host;
+- Docker daemon access and Compose v2 on the public VPS and the NAS/internal host;
 - a management hostname such as `portloom.example.com` pointing to the VPS;
 - public VPS ports TCP `80`, `443`, and `2222`; ports `80/443` must be free. The NAS needs no inbound port.
 
@@ -58,7 +60,7 @@ Internal HTTP service <───────────────────
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com
+./install-server.sh --domain portloom.example.com --version 0.4.0
 ```
 
 The installer starts only `portloom-server` and `portloom-sshd`. Server binds 80/443 directly with the minimal `NET_BIND_SERVICE` capability, then the installer prints the WebUI URL and a random administrator token.
@@ -71,14 +73,15 @@ Open `https://portloom.example.com` and sign in. Go to **Add Agent**, enter the 
 
 Paste the complete generated command on the NAS or internal Docker host. The Agent installer creates an Ed25519 key, pins the Server host key, enrolls with the one-time token, and starts Agent. The token is removed from configuration after enrollment succeeds.
 
-### 4. Add an HTTP route in the WebUI
+### 4. Add an HTTPS route in the WebUI
 
-Open **Routes → Add HTTP route**, select the Agent, and enter the public hostname and local target:
+Open **Routes → Add route**, select the Agent, keep the default **HTTPS** protocol, and enter the public hostname and local target:
 
 | Field | Example |
 | --- | --- |
 | Name | Jellyfin |
 | Client | home-nas |
+| Protocol | HTTPS |
 | Public domain | jellyfin.example.com |
 | Local host | 127.0.0.1 |
 | Local port | 8096 |
@@ -105,7 +108,7 @@ Neither is a prerequisite for a new installation. See [Production deployment](ht
 | Managed SSH service | `ghcr.io/lkhmm520/portloom-sshd:latest` |
 | Documentation site | `ghcr.io/lkhmm520/portloom-docs:latest` |
 
-A stable `vX.Y.Z` Git tag publishes exact semantic-version, major/minor, `sha-*`, and `latest` tags. Prereleases do not overwrite `latest`; manual runs publish only `edge` and `sha-*`. Pin exact versions in production. The WebUI passes the Server version to the Agent installer only when `/api/v1/system` returns a safe image tag.
+A `vX.Y.Z` Git tag first publishes immutable exact-version images. After release acceptance passes, the finalize workflow promotes `latest`, major, and major/minor channels for stable versions and creates the GitHub Release. Prereleases do not promote stable channels. Pin exact versions in production. The WebUI passes the Server version to the Agent installer only when `/api/v1/system` returns a safe image tag.
 
 ## Run Server from source
 

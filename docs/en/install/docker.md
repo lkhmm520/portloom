@@ -1,59 +1,76 @@
 # Install with Docker
 
-PortLoom is installed on two separate hosts. Do not install Server on the NAS or substitute Agent for Server on the VPS.
-
-```text
-Public VPS: Server (native HTTPS edge) + managed sshd
-                 ▲
-                 │ Agent initiates the encrypted tunnel
-                 │
-Private NAS: Agent → local service
-```
+PortLoom uses two hosts: a public VPS runs Server plus managed sshd; the NAS/internal host runs Agent and initiates outbound connections.
 
 ## Requirements
 
-Both hosts need Docker Engine 24+ and Compose v2. The public host also needs a management hostname pointing to it, public TCP 80/443/2222, and no existing process on 80/443 so Server can complete ACME HTTP-01 validation.
+- Docker daemon access and Compose v2 on both hosts. Agent accepts `docker compose` or standalone `docker-compose` v2; Server installer accepts only the Compose plugin;
+- a management hostname pointing to the VPS;
+- default install: public TCP 80/443/2222 and free local 80/443;
+- the NAS needs only outbound Server HTTPS and SSH, with no inbound port.
 
-If the public host already runs Caddy, Nginx, or NPM, do not run the easy installer because ports will conflict. Follow [Production deployment](/en/install/production) and [Reverse proxy integration](/en/install/reverse-proxy), with the external ingress forwarding to 8080/8081.
+If Caddy, Nginx, or NPM already owns 80/443, do not run the default command blindly. Read [Production deployment](/en/install/production) and [Reverse proxy integration](/en/install/reverse-proxy).
 
-## Public host: Server
+## Public host: Server v0.4
 
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com
+./install-server.sh \
+  --domain portloom.example.com \
+  --version 0.4.0
 ```
 
-The easy install runs only `portloom-server` and `portloom-sshd`. Server binds public ports 80/443 directly and uses autocert for certificates; Compose grants it `NET_BIND_SERVICE`. No Caddy, Nginx, or NPM service is installed.
-
-The default directory is `~/.portloom/server`:
+Server installer requires `flock`; only Agent installer has the directory-lock fallback for hosts without it. Generated layout:
 
 ```text
-compose.yml       Compose configuration for two services
-.env              Images, ports, management hostname, and random token (mode 0600)
-server-data/      SQLite database and certs/ certificate cache
-ssh-hostkeys/     Persistent Server SSH identity
-ssh-auth/         Agent authorization rebuilt by Server
+compose.yml       Server + sshd Compose configuration
+.env              immutable image IDs, ports, host, random admin token (0600)
+server-data/      SQLite and certs/ cache
+ssh-hostkeys/     Server SSH identity pinned by Agents
+ssh-auth/         Agent authorization rebuilt from SQLite
 ```
 
-The certificate cache is `/data/certs` inside the container and `server-data/certs/` on the host. Do not delete `server-data` or `ssh-hostkeys`: the first stores the database and ACME certificates; the second is the Server identity pinned by Agents.
+Never delete `server-data` or `ssh-hostkeys`, and do not reconstruct services with ad-hoc `docker run`. Upgrade an easy install by rerunning the newer installer so candidate generation, backup, real HTTPS readiness, and rollback remain transactional.
 
-When upgrading a v0.2.x easy install that includes Caddy, do not overwrite Compose directly. Follow the explicit `--migrate-native-edge` procedure in [Backup, upgrade, and rollback](/en/operations/backup-upgrade).
+## v0.4 ports and stream-edge options
 
-Inspect it with `docker compose ps` and `docker compose logs --tail=100` from `~/.portloom/server`. Do not upgrade an easy install with `docker compose pull && docker compose up -d`; that bypasses candidate configuration, backups, HTTPS readiness, and automatic rollback. Use the pinned new-`--version` installer rerun described below.
+```bash
+# Move primary edge to local 8088/8443; public 80 must still forward to 8088
+./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --http-port 8088 --https-port 8443
+
+# Do not publish TCP/UDP on first install
+./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --disable-tcp-edge
+
+# Restrict TCP/UDP publication to one IP on first install
+PORTLOOM_TCP_EDGE_BIND_HOST=192.0.2.10 \
+  ./install-server.sh --domain portloom.example.com --version 0.4.0 \
+  --enable-tcp-edge
+```
+
+`--enable-tcp-edge` is compatibility-only; v0.4 binds `0.0.0.0` by default, but the installer reads a custom `PORTLOOM_TCP_EDGE_BIND_HOST` only when that flag is present. These options reliably define first install. A non-empty value in an existing `.env` is preserved, so rerun flags are not a general toggle.
+
+Empty route `Public port` follows the primary edge. With the custom ports above, do not enter 8443 again in a route: that means an extra listener and conflicts with the primary port. HTTP 308 advertises public `:8443`; a lone `public 443 -> local 8443` mapping is insufficient for redirects. Also expose/map public 8443, keep configured and public ports identical, or let an outer proxy own and correctly rewrite redirects. Allow TCP for custom web/TCP ports and UDP for UDP route ports.
 
 ## Internal host: Agent
 
-Copy the generated command from **Add Agent** in the WebUI. It calls the public `install-agent.sh` with one-time enrollment data. The default `~/.portloom/agent` directory persists identity in `data/agent.json` and SSH material in `data/ssh/`.
+Copy the command from **Add Agent** instead of transcribing the one-time token. Persist and back up the complete `~/.portloom/agent/` install directory, including `.env`, `compose.yml`, and `data/`; `agent.json`, `ssh/id_ed25519`, and `ssh/known_hosts` inside `data/` are identity-critical.
 
-## Installer options
+The v0.4 installer adds common Synology/QNAP PATHs, checks Docker daemon access, accepts Compose plugin or standalone `docker-compose` v2, supports multiple SHA-256 tools, and falls back to a directory lock without `flock`. Rerun the same command after fixing a failure; never delete an existing identity. Remove a stale `$home/.install.lock.d` only after confirming no installer is running concurrently.
+
+Rerunning the same command is only same-version resume/recovery. The current installer rejects changing an existing Agent directory to another `--version` and has no released installer-managed cross-version transaction. Do not force an upgrade by deleting `agent.json`/keys or blindly editing immutable image IDs.
+
+## Inspect status
 
 ```bash
-./install-server.sh --help
-./install-agent.sh --help
+cd ~/.portloom/server
+docker compose --env-file .env -f compose.yml ps
+docker compose --env-file .env -f compose.yml logs --tail=100 server
 ```
 
-Use `--version` to pin a release in production. `latest` is convenient for a first trial, not unattended upgrades. The installer persists the resolved immutable Server/sshd image IDs in `.env`, and Compose uses only those IDs; an idempotent rerun neither pulls an unchanged tag nor silently follows a locally moved `latest`. The first rerun of an older install migrates IDs from matching running containers; it fails closed when neither a container nor a persisted ID is available. To upgrade, pass a different pinned `--version`; the installer preserves the administrator token and persistent data and re-verifies HTTPS.
+Pin `--version` in production. `latest` is for initial evaluation, not unattended upgrades. The installer writes resolved immutable image IDs into `.env`; rerunning the same reference does not silently follow a moved local tag.
 
 ## Build from source
 
@@ -61,6 +78,4 @@ Use `--version` to pin a release in production. `latest` is convenient for a fir
 git clone https://github.com/lkhmm520/portloom.git
 cd portloom
 make docker-build VERSION=local
-docker build -f Dockerfile.sshd -t portloom-sshd:local .
-docker build -f Dockerfile.docs -t portloom-docs:local .
 ```

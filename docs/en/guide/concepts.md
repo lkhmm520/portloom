@@ -1,21 +1,33 @@
 # Core concepts
 
-## Server and Gateway
+## Server, Gateway, and public edges
 
-One Server process always exposes two internal listeners: an administration listener (default `127.0.0.1:8080`) and an HTTP Host Gateway (default `127.0.0.1:8081`). The easy install also enables Server’s native public edge on ports 80/443; it terminates HTTPS and dispatches the management hostname to control and enabled HTTP route hostnames to the Gateway. The Gateway proxies to each route’s allocated SSH loopback port.
+One Server process contains the administration listener (default `127.0.0.1:8080`) and the legacy Gateway (default `127.0.0.1:8081`). The easy install also enables native HTTP/HTTPS edges. Their primary ports default to 80/443 and may be moved to other local ports by the installer.
+
+Gateway selects a ready web route by incoming **scheme, port, Host, and path**. The longest matching path prefix wins, and `strip_path` can remove that prefix before proxying. Server dynamically opens extra listeners for non-default web public ports.
+
+The stream edge dynamically publishes TCP/UDP routes on explicit public ports. TCP forwards bytes. UDP keeps sessions by public source address and carries framed datagrams over a TCP connection inside the tunnel.
 
 ## Agent and Client
 
-An Agent runs on the NAS, enrolls once, stores credentials in `/data/agent.json`, polls desired state, probes local services, reconciles OpenSSH `-R` forwards, and reports observations. Every enrolled Agent becomes an independent Client.
+After enrollment, Agent persists its long-lived identity in `/data/agent.json`. It pulls desired state, probes local targets, reconciles OpenSSH `-R` forwards, sends heartbeats, and reports process resources. Each enrolled Agent is a Client in the API.
 
-::: warning Current limitation
-`tunnel_group` is persisted as metadata, but the current Agent uses one OpenSSH ControlMaster. Run separate Agent containers/Clients when Web and high-throughput media traffic must use independent SSH master connections.
+::: warning Connection isolation
+`tunnel_group` is persisted, but one Agent currently owns one OpenSSH ControlMaster. Run two Agents/Clients with separate state directories when web and high-volume media traffic need separate SSH master connections.
 :::
 
 ## Route
 
-An HTTP route includes its domain, local target, enabled flag, and an automatically allocated VPS loopback port. The WebUI creates HTTP routes only. Existing TCP records are compatibility metadata and do not represent public listeners; the built-in Gateway proxies HTTP by Host.
+Every route has a name, Client, local target, enabled state, desired/observed revision, and an allocated VPS loopback port.
 
-## Desired and observed state
+- Web route: `http` or `https`, requires a domain, and may specify a path prefix, prefix stripping, and custom public port.
+- Stream route: `tcp` or `udp`, has no domain/path and requires a public port.
+- A web endpoint is unique by `(protocol, domain, public port, path prefix)`. A TCP/UDP public port can belong to only one stream route.
 
-An API write only changes desired state. Configuration is converged after the Agent reports the same revision. Local reachability, SSH connectivity, and revision convergence are reported separately.
+## Desired, observed, and published state
+
+An API write changes desired state only. A route becomes publication-ready after Agent reports an observed revision **equal** to the current desired revision, Tunnel is `up`, and its heartbeat is fresh (90-second window). A lower revision has not converged; a higher revision is rejected by the API. Local, Tunnel, and Public are separate; `published` does not prove external DNS, certificates, or firewall policy.
+
+## Metrics
+
+Server keeps in-memory request/session counts, byte totals, a rolling 60-minute series, and CPU/RSS samples for itself and Agents. Deleting a route does not currently clear that route ID's accumulated counters immediately. Restarting Server resets all metrics.

@@ -1,62 +1,64 @@
 # 生产环境部署
 
-快速开始适合一台 80/443 空闲的 VPS。生产部署前先决定公网入口：
+## 先选择公网入口
 
-- 80/443 空闲：使用简易安装器，让 PortLoom Server 原生终止 HTTPS；
-- 已有 Caddy、Nginx 或 NPM：使用 8080/8081 作为外部反向代理上游，这是兼容旧部署的高级集成；
-- 有合规要求：固定镜像版本，逐项审计 Compose、capability 和卷权限。
-
-## 原生入口的端口与数据流
-
-| 端口 | 默认监听 | 用途 |
+| 模式 | 适用场景 | v0.4 能力 |
 | --- | --- | --- |
-| 80/443 | PortLoom Server 公网地址 | ACME HTTP-01、HTTPS WebUI 和 HTTP 业务域名 |
-| 2222 | 受管 sshd 公网地址 | Agent 主动建立反向隧道 |
-| 8080 | 127.0.0.1 | Server WebUI 和 API 的内部监听器 |
-| 8081 | 127.0.0.1 | Host 路由 Gateway 的内部监听器 |
-| 20000–29999 | 127.0.0.1 | 自动分配的 SSH 回环端口 |
+| 原生 edge（推荐） | 公网 80 到达配置的 HTTP listener，且配置的 HTTPS 端口能以**相同 advertised 端口**从公网访问 | 完整 HTTP/HTTPS、路径、extra Web 端口、管理域名子路径、自动证书 |
+| 外部 Caddy/Nginx/NPM | 已有入口必须继续占用 80/443 | 8080 管理 + 8081 传统 Gateway；TLS/跳转由外部入口负责，自定义 Web public port 不可用 |
 
-Agent 所在网络只需要出站访问 Server 的 443 和 2222。公网 80 必须保持可达，供 ACME HTTP-01 签发和续期使用。
+TCP/UDP stream edge 与原生 Web edge 独立；只要 `TM_TCP_EDGE_BIND_HOST` 未关闭，它在两种模式下都可工作。
 
-Server 需要 `NET_BIND_SERVICE` capability 才能以非 root 身份绑定 80/443。简易安装器生成的 Compose 先丢弃全部 capability，再只添加这一项；手写 Compose 时不要遗漏，也不要改为特权容器。
+## 端口模型
 
-## 固定镜像版本
+| 端口 | 默认绑定 | 用途 |
+| --- | --- | --- |
+| 80/443 | Server 公网地址 | 主 HTTP/HTTPS edge、ACME、WebUI 与默认 Web 路由 |
+| 动态 Web/TCP/UDP 端口 | `TM_EDGE_HTTP_ADDR` 的 host / `TM_TCP_EDGE_BIND_HOST` | v0.4 自定义公网路由 |
+| 2222 | 受管 sshd 公网地址 | Agent 主动反向隧道 |
+| 8080/8081 | `127.0.0.1` | 管理监听器 / 传统 Gateway |
+| 20000–29999 | 回环 | 每路由自动分配的 SSH 转发 |
+
+公网 80 必须到达主 HTTP edge 以完成 HTTP-01。`--http-port 8088` 只改变本机监听，外部仍需做 `80 -> 8088`。HTTP 308 使用 **Server 配置的主 HTTPS 端口**：配置 8443 时 Location 会广告公网 `:8443`。因此只做 `public 443 -> local 8443` 并不能保证 HTTP→HTTPS 跳转可用；还必须让公网 8443 到达该 listener、保持配置端口与公网端口一致，或由能正确重写 Location/接管跳转与 TLS 的前置代理处理。自定义 HTTPS 端口没有这些映射/代理时，URL 必须显式包含端口。
+
+路由的 `Public port` 留空表示主 edge，而不是固定 80/443。主 edge 为 8088/8443 时仍应留空；填写 8443 会被解释为额外 listener 并因占用主端口而拒绝。安装器成功提示会显示实际 WebUI URL 与有效 stream-edge 状态；仍应以 `.env`、`/api/v1/system` 和端到端测试共同验收。
+
+## 固定 v0.4 镜像并验收
 
 ```bash
-./install-server.sh --domain portloom.example.com --version 0.3.0
+curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+chmod 0700 install-server.sh
+./install-server.sh --domain portloom.example.com --version 0.4.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
-docker compose ps
-docker compose logs --tail=100 server
+docker compose --env-file .env -f compose.yml ps
+docker compose --env-file .env -f compose.yml logs --tail=100 server
 ```
 
-安装器已启动并验证服务；不要在其后另行执行裸 `docker compose up`，否则会绕过 readiness 与回滚保护。保持 Compose 项目名和卷路径。不要使用临时 `docker run` 重建数据库容器。
+安装器已经启动并验证 HTTPS，不要紧接着用裸 `docker compose up` 绕过保护。保持 Compose 项目名、安装目录和卷路径，不要用特权容器或临时 `docker run` 重建数据库服务。
 
-## 受管 SSH 边界
+Server 以非 root 运行；绑定低端口只需 `NET_BIND_SERVICE`。受管 sshd 拒绝 Shell、TTY、X11、Agent forwarding 与用户 RC，仅允许 Ed25519 公钥和回环 `-R`。
 
-`portloom-sshd` 是独立容器，不修改宿主机 `/etc/ssh/sshd_config`。它只允许 Ed25519 公钥认证和绑定 `127.0.0.1:*` 的 `ssh -N -R` 远程转发；拒绝 Shell、TTY、X11、Agent 转发和用户 RC。
-
-Server 对 `ssh-auth` 卷有写权限，sshd 只读。sshd 对 `ssh-hostkeys` 卷有写权限，Server 只读。Server 启动时从 SQLite 重建 `authorized_keys`。应保留 `ssh-hostkeys/ssh_host_ed25519_key`。
-
-## 数据、证书和权限
+## 数据与权限
 
 至少备份：
 
 ```text
-server-data/portloom.db
+server-data/portloom.db (+ WAL/SHM when live)
 server-data/certs/
 ssh-hostkeys/
+ssh-auth/
 .env
+compose.yml
 ```
 
-`/data/certs` 是 autocert 的持久证书缓存，在默认安装中对应 `server-data/certs/`。`server-data` 和 `ssh-auth` 由 UID/GID 65532 写入；不要把目录改成 `0777`。
+`server-data` 与 `ssh-auth` 由 UID/GID 65532 使用。不要用 `0777` 掩盖权限错误，不要只备份单个 SQLite 主文件。
 
-## 已有公网入口（高级/兼容模式）
+## 上线检查
 
-不要启用原生 `TM_EDGE_HTTP_ADDR`/`TM_EDGE_HTTPS_ADDR`，并确保 Server 的 8080/8081 只监听回环或受防火墙保护的私网地址。管理域名转发到 8080；业务域名转发到 8081 并保留 Host，详见[反向代理接入](/install/reverse-proxy)。受管 sshd 仍可使用 2222。
-
-外部 Caddy 如仍使用 on-demand TLS `ask`，可启用可选的 `TM_TLS_ASK_TOKEN` 和 `TM_TLS_ASK_ADDR` 兼容端点。它不是原生入口的证书签发路径。
-
-## 上线验证
-
-验证 HTTPS WebUI、HTTP 到 HTTPS 跳转、2222 拒绝普通命令、Agent/Local/Tunnel 状态、Host 保留和重启恢复。确认只有 `TM_PUBLIC_HOST` 和已启用 HTTP 路由域名能触发签发，并演练恢复数据库、证书缓存和 SSH 主机密钥。
+1. `/api/v1/system` 返回 `0.4.0`，并显示预期的 `tcp_edge`、`udp_edge`、`web_port_edge`；
+2. HTTPS 管理入口与 HTTP 308 跳转正常；
+3. Agent 安装后无一次性令牌仍能重启和心跳；
+4. 分别测试 HTTPS、HTTP、TCP、UDP，以及至少一条路径/自定义端口路由；
+5. 核对 Local/Tunnel/Public、近 60 分钟流量和 Server/Agent 资源；
+6. 演练数据库、证书缓存和 SSH 主机身份恢复。

@@ -1,68 +1,63 @@
 # Five-minute quick start
 
-You need two Linux hosts with Docker Compose: a public VPS and a NAS or internal server. You also need a domain name.
+You need two Linux hosts with Docker Compose: a public VPS and a NAS/internal server, plus a management hostname.
 
-## 0. Prepare DNS and the firewall
+## 0. DNS and firewall
 
-Point the management hostname to the VPS:
+Point the management hostname to the VPS; a wildcard record is optional:
 
 ```text
 portloom.example.com  A  203.0.113.10
+*.example.com         A  203.0.113.10
 ```
 
-If all services use the same parent domain, add one wildcard record:
+Allow public TCP `80`, `443`, and `2222`. The NAS needs no inbound port. ACME HTTP-01 requires public port 80 to reach Server's HTTP edge; with defaults, local 80/443 must be free. Later, allow every custom web/TCP port you publish, and allow UDP for UDP routes.
 
-```text
-*.example.com  A  203.0.113.10
-```
-
-Allow TCP `80`, `443`, and `2222` on the VPS. The NAS needs no inbound port. ACME HTTP-01 validation requires public access to port 80, and no other process may own ports 80/443.
-
-## 1. Install Server on the public host
-
-Download and inspect the script before running it:
+## 1. Install Server v0.4
 
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com
+./install-server.sh --domain portloom.example.com --version 0.4.0
 ```
 
-The installer starts two containers:
+The installer starts `portloom-server` and `portloom-sshd`, verifies the real HTTPS `/healthz`, and prints the WebUI URL and a random administrator token. The stream edge binds `0.0.0.0` by default; append `--disable-tcp-edge` on first install if you do not need TCP/UDP publication.
 
-- `portloom-server`: WebUI, API, route gateway, and the native public HTTPS edge on ports 80/443;
-- `portloom-sshd`: a restricted SSH endpoint used only by PortLoom.
+## 2. Add an Agent in the WebUI
 
-Server uses autocert with ACME HTTP-01 to obtain and renew certificates, persisting its cache at `/data/certs` in the Server data directory. The installer grants Server the `NET_BIND_SERVICE` capability required to bind ports 80/443. It does not install Caddy, Nginx, or NPM.
+Open `https://portloom.example.com`, enter the administrator token, then open **Add Agent**. Enter the Agent name, HTTPS Server URL, public SSH hostname, and port `2222`; select **Generate command**.
 
-It prints the WebUI URL and a random administrator token when finished.
+An unused install command can be deleted/revoked from the token list. Already enrolled Agents are unaffected.
 
-## 2. Open the WebUI
+## 3. Run the generated command on the NAS
 
-Open `https://portloom.example.com` and enter the administrator token. Go to **Add Agent**, enter the Agent name, HTTPS Server URL, public Server hostname, and SSH port `2222`, then click **Generate command**.
+The Agent installer checks Docker daemon access and Compose v2, accepts both `docker compose` and standalone `docker-compose` v2, and handles common Synology/QNAP PATH, hash-tool, and no-`flock` environments. It creates an Ed25519 key, pins the Server host key, enrolls, and removes the one-time token from configuration after success.
 
-## 3. Install Agent on the NAS
+If installation fails, fix the reported prerequisite and rerun the **same command** to resume safely. Do not delete `~/.portloom/agent/data`.
 
-Paste the complete generated command on the NAS or internal Docker host. The installer creates an Ed25519 key, pins the Server host key, enrolls once, uploads the Agent public key, and removes the one-time enrollment token after success.
+## 4. Create the first HTTPS route
 
-The new host appears under Clients within a few seconds.
-
-## 4. Add the first route
-
-Open **Routes → Add HTTP route** and enter:
+Open **Routes → Add route**:
 
 | Field | Example |
 | --- | --- |
 | Name | Jellyfin |
 | Client | home-nas |
-| Protocol | HTTP |
+| Protocol | HTTPS |
 | Public domain | jellyfin.example.com |
-| Local host | 127.0.0.1 or a LAN service address |
-| Local port | 8096 |
+| Path prefix | empty |
+| Public port | empty (primary HTTPS edge) |
+| Local host | `127.0.0.1` or another NAS-reachable address |
+| Local port | `8096` |
 
-Wait until local and tunnel status are green, then open `https://jellyfin.example.com`.
+Wait for Local, Tunnel, and Public to converge, then open `https://jellyfin.example.com`. Add a separate A/AAAA record first if you did not configure wildcard DNS.
 
-If you did not create wildcard DNS, point the route hostname to the VPS separately. The native edge authorizes certificates only for `TM_PUBLIC_HOST` and enabled HTTP route hostnames; unknown names are denied.
+## 5. Try v0.4 route capabilities
 
-See [Install with Docker](/en/install/docker) for files and upgrades. Use [Production deployment](/en/install/production) when integrating an existing ingress or auditing every Compose setting.
+- Plaintext: select **HTTP**; no certificate or forced redirect is used.
+- Sub-path: enter `/jellyfin` and enable **Strip path prefix** if the upstream expects `/`.
+- Custom web port: enter a value such as `8443` and allow that TCP port.
+- TCP/UDP: select the protocol and enter the required Public port; ensure the stream edge is enabled.
+
+See [Route management](/en/usage/routes) for exact conflicts and [Backup, upgrade, rollback](/en/operations/backup-upgrade) for upgrades.

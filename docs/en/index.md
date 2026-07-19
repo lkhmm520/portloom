@@ -2,15 +2,15 @@
 layout: home
 hero:
   name: PortLoom
-  text: Stable, reliable, fast tunnel proxying
-  tagline: Publish NAS, homelab, and internal web services through a public host. Run Server on the public Docker host and Agent inside the private network. The Agent makes the encrypted outbound connection, so the private network needs no inbound port.
-  image: { src: /hero-loom.svg, alt: PortLoom tunnel connection diagram }
+  text: Stable, reliable, fast self-hosted tunneling
+  tagline: Publish NAS, homelab, and internal services through a public host. v0.4 supports HTTPS, HTTP, TCP, UDP, path prefixes, custom public ports, and traffic/resource metrics.
+  image: { src: /hero-loom.svg, alt: PortLoom tunnel flow }
   actions:
     - { theme: brand, text: Start installing, link: /en/guide/quick-start }
-    - { theme: alt, text: How it works, link: /en/guide/what-is-portloom }
+    - { theme: alt, text: Explore v0.4 routes, link: /en/usage/routes }
 features:
-  - { title: Two hosts, one install command, details: 'Install Server on the public Docker host, then copy one command from the WebUI to the NAS. The installer handles keys, host identity, and enrollment.' }
-  - { title: Manage routes in the WebUI, details: 'Choose an Agent and enter the internal address, port, and public hostname. Adding a service does not require editing SSH commands.' }
-  - { title: Safe defaults are included, details: 'Agents connect outbound. The managed SSH account has no shell and can create loopback reverse forwards only. Containers never mount the Docker socket.' }
+  - { title: Two hosts, one Agent command, details: 'Run Server and managed sshd on the public host and only Agent on the NAS. The installer handles keys, host pinning, and the one-time credential.' }
+  - { title: Four protocols and flexible routing, details: 'Create HTTPS, HTTP, TCP, and UDP routes in the WebUI. Web routes support path prefixes, prefix stripping, and custom public ports.' }
+  - { title: Status, traffic, and resources, details: 'Inspect Local, Tunnel, and Public separately; Dashboard shows 60-minute traffic and resources, while the metrics API also exposes per-route counters.' }
 ---
 <HomeFlow />

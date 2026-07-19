@@ -259,7 +259,7 @@ func TestGatewayMatchesSchemePathAndPort(t *testing.T) {
 		return response
 	}
 
-	httpsEdge := Edge{Scheme: "https", Port: 443}
+	httpsEdge := Edge{Scheme: "https", Port: 443, Default: true}
 	if got := serve(httpsEdge, "/media/tv").Body.String(); got != "prefix /media/tv" {
 		t.Fatalf("longest prefix match failed: %q", got)
 	}
@@ -267,7 +267,7 @@ func TestGatewayMatchesSchemePathAndPort(t *testing.T) {
 		t.Fatalf("root fallback failed: %q", got)
 	}
 	// The HTTPS-only domain must not be served on the plain-HTTP edge.
-	if code := serve(Edge{Scheme: "http", Port: 80}, "/other").Code; code != http.StatusNotFound {
+	if code := serve(Edge{Scheme: "http", Port: 80, Default: true}, "/other").Code; code != http.StatusNotFound {
 		t.Fatalf("plain edge served an HTTPS route: %d", code)
 	}
 	// A non-default edge port must not match default-port routes.
@@ -287,14 +287,14 @@ func TestGatewayStripsPathPrefixWhenRequested(t *testing.T) {
 	handler := New(&staticRouteSource{routes: []domain.Route{route}})
 
 	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/media/tv/1", nil)
-	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443, Default: true}))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if got := response.Body.String(); got != "stripped /tv/1" {
 		t.Fatalf("strip path result=%q", got)
 	}
 	request = httptest.NewRequest(http.MethodGet, "https://app.example.com/media", nil)
-	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443, Default: true}))
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if got := response.Body.String(); got != "stripped /" {
@@ -306,7 +306,7 @@ func TestGatewayRedirectsPlainHTTPOnlyWhenHTTPSRouteExists(t *testing.T) {
 	route := readyWebRoute(domain.ProtocolHTTPS, "secure.example.com", "", 0, 1)
 	handler := New(&staticRouteSource{routes: []domain.Route{route}}, WithHTTPSRedirect(443))
 	request := httptest.NewRequest(http.MethodGet, "http://secure.example.com/x?a=1", nil)
-	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "http", Port: 80}))
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "http", Port: 80, Default: true}))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusPermanentRedirect {
@@ -347,7 +347,7 @@ func TestGatewayCountsTraffic(t *testing.T) {
 		readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "", 0, port),
 	}}, WithTrafficObserver(observer))
 	request := httptest.NewRequest(http.MethodPost, "https://app.example.com/upload", strings.NewReader(strings.Repeat("x", 64)))
-	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443, Default: true}))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -355,5 +355,33 @@ func TestGatewayCountsTraffic(t *testing.T) {
 	}
 	if observer.requests.Load() != 1 || observer.in.Load() != 64 || observer.out.Load() != 32 {
 		t.Fatalf("observed requests=%d in=%d out=%d", observer.requests.Load(), observer.in.Load(), observer.out.Load())
+	}
+}
+
+func TestGatewayServesDefaultPortRoutesOnCustomPrimaryEdgePorts(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "custom-edge "+r.URL.Path)
+	}))
+	t.Cleanup(backend.Close)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	handler := New(&staticRouteSource{routes: []domain.Route{
+		readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "", 0, port),
+	}})
+	// The primary HTTPS edge may listen on any port (e.g. --https-port 8443);
+	// default-port routes must still be served there.
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 8443, Default: true}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if got := response.Body.String(); got != "custom-edge /x" {
+		t.Fatalf("custom primary port result=%q", got)
+	}
+	// An extra-port listener on the same number must not serve it.
+	request = httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 8443}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("extra-port listener served a default-port route: %d", response.Code)
 	}
 }

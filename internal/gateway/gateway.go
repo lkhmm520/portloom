@@ -25,8 +25,13 @@ type RouteSource interface {
 type Edge struct {
 	// Scheme is "http", "https", or "" for the legacy listener.
 	Scheme string
-	// Port is the public listener port; 0 means the protocol default.
+	// Port is the public listener port.
 	Port int
+	// Default marks the primary HTTP/HTTPS edge listeners. Routes without an
+	// explicit public port are served by the primary listeners regardless of
+	// which ports those are configured on; routes with an explicit port are
+	// served by the matching extra-port listener.
+	Default bool
 }
 
 type contextKey struct{}
@@ -95,11 +100,13 @@ func routeMatches(route *domain.Route, edge Edge, host, path string) bool {
 			return false
 		}
 	case string(route.Protocol):
-		port := edge.Port
-		if port == 0 {
-			port = route.Protocol.DefaultPublicPort()
-		}
-		if route.EffectivePublicPort() != port {
+		if route.PublicPort == 0 {
+			// Default-port routes belong to the primary edge listeners,
+			// wherever those are bound (e.g. a custom --http-port).
+			if !edge.Default {
+				return false
+			}
+		} else if edge.Default || edge.Port != route.PublicPort {
 			return false
 		}
 	default:

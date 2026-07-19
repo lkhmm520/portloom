@@ -42,7 +42,7 @@ func NewRouter(publicHost string, control http.Handler, gatewayHandler *gateway.
 	if err != nil {
 		return nil, fmt.Errorf("parse HTTPS listener address: %w", err)
 	}
-	edgeInfo := gateway.Edge{Scheme: "https", Port: httpsPort}
+	edgeInfo := gateway.Edge{Scheme: "https", Port: httpsPort, Default: true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(gateway.WithEdge(r.Context(), edgeInfo))
 		if domain.NormalizeHost(r.Host) == publicHost {
@@ -98,7 +98,7 @@ func NewHTTPHandler(publicHost, httpAddr, httpsAddr string, gatewayHandler http.
 	if err != nil {
 		return nil, fmt.Errorf("parse HTTPS listener address: %w", err)
 	}
-	edgeInfo := gateway.Edge{Scheme: "http", Port: httpPort}
+	edgeInfo := gateway.Edge{Scheme: "http", Port: httpPort, Default: true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := domain.NormalizeHost(r.Host)
 		if host == "" {

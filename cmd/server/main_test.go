@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/store"
 )
 
@@ -30,6 +35,27 @@ func TestLoadConfigRequiresAdminTokenAndUsesDefaults(t *testing.T) {
 	}
 	if cfg.ListenAddr != "127.0.0.1:8080" || cfg.GatewayAddr != "127.0.0.1:8081" || cfg.PortRangeStart != 20000 {
 		t.Fatalf("cfg=%#v", cfg)
+	}
+}
+
+func TestLoadConfigRequiresLiteralIPTCPBindHost(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "2001:db8::1"} {
+		env := map[string]string{
+			"TM_ADMIN_TOKEN":        "a-very-long-admin-token",
+			"TM_TCP_EDGE_BIND_HOST": host,
+		}
+		if _, err := loadConfig(func(key string) string { return env[key] }); err != nil {
+			t.Fatalf("literal TCP bind host %q rejected: %v", host, err)
+		}
+	}
+	for _, host := range []string{"example.com", "127.0.0.1:9000", "[2001:db8::1]:9000"} {
+		env := map[string]string{
+			"TM_ADMIN_TOKEN":        "a-very-long-admin-token",
+			"TM_TCP_EDGE_BIND_HOST": host,
+		}
+		if _, err := loadConfig(func(key string) string { return env[key] }); err == nil {
+			t.Fatalf("non-literal TCP bind host %q accepted", host)
+		}
 	}
 }
 
@@ -168,4 +194,128 @@ func TestLoadConfigRejectsMalformedNativeEdgePublicHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunStartsConvergenceGatedTCPPublicEdge(t *testing.T) {
+	remotePort := reserveServerTestPort(t)
+	publicPort := reserveServerTestPort(t)
+	for publicPort == remotePort {
+		publicPort = reserveServerTestPort(t)
+	}
+	databasePath := filepath.Join(t.TempDir(), "state.db")
+	state, err := store.Open(databasePath, store.Options{PortRangeStart: remotePort, PortRangeEnd: remotePort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := state.CreateEnrollmentToken(ctx, "enroll", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	agent, _, err := state.ConsumeEnrollmentToken(ctx, "enroll", "nas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := state.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "tcp-service", Protocol: domain.ProtocolTCP,
+		LocalHost: "127.0.0.1", LocalPort: remotePort, PublicPort: publicPort, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Heartbeat(ctx, agent.ID, route.DesiredRevision, []domain.RouteObservation{{
+		RouteID: route.ID, ObservedRevision: route.DesiredRevision,
+		LocalStatus: "healthy", TunnelStatus: "up",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	backend, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(remotePort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	go serveServerTestEcho(backend)
+
+	web := t.TempDir()
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("dashboard"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"TM_ADMIN_TOKEN":        "a-very-long-admin-token",
+		"TM_DATABASE_PATH":      databasePath,
+		"TM_WEB_DIR":            web,
+		"TM_LISTEN_ADDR":        "127.0.0.1:0",
+		"TM_GATEWAY_ADDR":       "127.0.0.1:0",
+		"TM_TCP_EDGE_BIND_HOST": "127.0.0.1",
+		"TM_PORT_RANGE_START":   fmt.Sprint(remotePort),
+		"TM_PORT_RANGE_END":     fmt.Sprint(remotePort),
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(runCtx, func(key string) string { return env[key] }) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("run: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("server did not stop")
+		}
+	}()
+
+	connection := waitForServerTestPort(t, publicPort)
+	defer connection.Close()
+	if _, err := connection.Write([]byte("edge")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len("edge"))
+	if _, err := io.ReadFull(connection, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "edge" {
+		t.Fatalf("echo=%q want edge", got)
+	}
+}
+
+func reserveServerTestPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func serveServerTestEcho(listener net.Listener) {
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer connection.Close()
+			_, _ = io.Copy(connection, connection)
+		}()
+	}
+}
+
+func waitForServerTestPort(t *testing.T, port int) net.Conn {
+	t.Helper()
+	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		connection, err := net.DialTimeout("tcp4", address, 50*time.Millisecond)
+		if err == nil {
+			return connection
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("TCP public edge did not listen on %s", address)
+	return nil
 }

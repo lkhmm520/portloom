@@ -132,7 +132,7 @@ func TestRouteLifecycleAllocatesPortsAndAdvancesRevision(t *testing.T) {
 	}
 
 	second, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: agent.ID, Name: "ssh", Protocol: domain.ProtocolTCP,
+		ClientID: agent.ID, Name: "ssh", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 		LocalHost: "localhost", LocalPort: 22, Enabled: true,
 	})
 	if err != nil {
@@ -193,7 +193,7 @@ func TestRoutePortAllocationSkipsPortUsedByLoopbackService(t *testing.T) {
 	ctx := context.Background()
 	s, agent := enrolledStore(t, occupiedPort, occupiedPort+1)
 	route, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP,
+		ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 		LocalHost: "127.0.0.1", LocalPort: 8080, Enabled: true,
 	})
 	if err != nil {
@@ -295,7 +295,7 @@ func TestHeartbeatRejectsRevisionOutsideAgentDesiredRange(t *testing.T) {
 			ctx := context.Background()
 			s, agent := enrolledStore(t, 32100, 32101)
 			if _, err := s.CreateRoute(ctx, domain.Route{
-				ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP,
+				ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 				LocalHost: "localhost", LocalPort: 8080, Enabled: true,
 			}); err != nil {
 				t.Fatal(err)
@@ -329,7 +329,7 @@ func TestHeartbeatRejectsRouteObservationOutsideAgentDesiredRange(t *testing.T) 
 			ctx := context.Background()
 			s, agent := enrolledStore(t, 32110, 32111)
 			route, err := s.CreateRoute(ctx, domain.Route{
-				ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP,
+				ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 				LocalHost: "localhost", LocalPort: 8080, Enabled: true,
 			})
 			if err != nil {
@@ -366,7 +366,7 @@ func TestHeartbeatStaleRouteObservationCannotOverwriteNewerStatus(t *testing.T) 
 	}
 
 	if _, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: agent.ID, Name: "second", Protocol: domain.ProtocolTCP,
+		ClientID: agent.ID, Name: "second", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 		LocalHost: "localhost", LocalPort: 8081, Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestHeartbeatDoesNotUpdateRouteBeforeItsDesiredRevision(t *testing.T) {
 	ctx := context.Background()
 	s, agent := enrolledStore(t, 32300, 32301)
 	route, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP,
+		ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 		LocalHost: "localhost", LocalPort: 8080, Enabled: true,
 	})
 	if err != nil {
@@ -434,13 +434,13 @@ func TestHeartbeatCannotUpdateRouteOwnedByAnotherAgent(t *testing.T) {
 	s, first := enrolledStore(t, 32400, 32403)
 	second := enrollAdditionalAgent(t, s, "second-agent")
 	if _, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: first.ID, Name: "first", Protocol: domain.ProtocolTCP,
+		ClientID: first.ID, Name: "first", Protocol: domain.ProtocolTCP, PublicPort: 45000,
 		LocalHost: "localhost", LocalPort: 8080, Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	secondRoute, err := s.CreateRoute(ctx, domain.Route{
-		ClientID: second.ID, Name: "second", Protocol: domain.ProtocolTCP,
+		ClientID: second.ID, Name: "second", Protocol: domain.ProtocolTCP, PublicPort: 45001,
 		LocalHost: "localhost", LocalPort: 8081, Enabled: true,
 	})
 	if err != nil {

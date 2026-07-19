@@ -28,6 +28,7 @@ type ManagedSSHRegistrationConfig struct {
 	InitialBackoff  time.Duration
 	MaxBackoff      time.Duration
 	VerifyTransport func(context.Context) error
+	DeferReady      bool
 }
 
 func RegisterManagedSSHKey(ctx context.Context, registrar SSHKeyRegistrar, path string) error {
@@ -82,8 +83,8 @@ func RegisterManagedSSHKeyWithConfig(ctx context.Context, registrar SSHKeyRegist
 			}
 		}
 		if err == nil {
-			if config.ReadyPath != "" {
-				if err := writeReadyMarker(config.ReadyPath, config.ReadyValue); err != nil {
+			if config.ReadyPath != "" && !config.DeferReady {
+				if err := MarkManagedSSHReady(config.ReadyPath, config.ReadyValue); err != nil {
 					return err
 				}
 			}
@@ -138,7 +139,18 @@ func temporaryRegistrationError(err error) bool {
 	return !errors.As(err, &temporary) || temporary.Temporary()
 }
 
-func writeReadyMarker(path, value string) error {
+func MarkManagedSSHReady(path, value string) error {
+	path = strings.TrimSpace(path)
+	value = strings.TrimSpace(value)
+	if path == "" {
+		return nil
+	}
+	if value == "" {
+		value = "ready"
+	}
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return errors.New("managed SSH ready value is invalid")
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create managed SSH ready directory: %w", err)

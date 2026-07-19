@@ -67,17 +67,19 @@ test("add-agent UI keeps token API narrow and generates a shell-safe version-pin
   }
 });
 
-test("route creation exposes HTTP only and explains the built-in ingress boundary", () => {
+test("route creation exposes HTTP and TCP with an explicit public port", () => {
   const routeForm = html.match(/<form id="route-form"[\s\S]*?<\/form>/)?.[0] || "";
   assert.ok(routeForm, "route form exists");
   assert.match(routeForm, /value="http"/i);
-  assert.doesNotMatch(routeForm, /value="tcp"|name="public_port"/i);
-  assert.match(html, /built-in public ingress fully supports HTTP\/HTTPS routes only/i);
+  assert.match(routeForm, /value="tcp"/i);
+  assert.match(routeForm, /name="public_port"/i);
+  assert.match(html, /TCP routes publish an explicit VPS port/i);
 
   const payload = app.match(/function routePayload\(form\)[\s\S]*?\n  }/)?.[0] || "";
-  assert.match(payload, /protocol:\s*"http"/);
-  assert.match(payload, /public_port:\s*0/);
-  assert.doesNotMatch(payload, /data\.get\("protocol"\)|protocol\s*===\s*"tcp"/);
+  assert.match(payload, /form\.elements\.protocol\.value/);
+  assert.match(payload, /protocol\s*===\s*"tcp"/);
+  assert.match(payload, /Number\(data\.get\("public_port"\)\)/);
+  assert.match(app, /async function monitorRoutePublication/);
 });
 
 test("enrollment token list identifies rows by safe token ID", () => {
@@ -97,7 +99,7 @@ test("route edit locks client ownership and keeps a neutral success message", ()
 
   const payload = app.match(/function routePayload\(form\)[\s\S]*?\n  }/)?.[0] || "";
   assert.match(payload, /client_id:\s*String\(form\.elements\.client_id\.value\)/);
-  assert.match(app, /showNotice\(t\(id \? "routes\.updated" : "routes\.created"\)/);
+  assert.match(app, /showNotice\(t\("routes\.waitingForPublish"\)/);
   assert.doesNotMatch(app, /client (?:changed|updated|reassigned)/i);
 });
 
@@ -110,16 +112,19 @@ test("public route status mirrors the gateway convergence gate at runtime", () =
   const base = { enabled: true, local_status: "up", tunnel_status: "up", observed_revision: 3, desired_revision: 3 };
   assert.equal(hooks.routePublicStatus(base), "published");
   assert.equal(hooks.routeHealthy(base), true);
-  const tcp = { ...base, protocol: "tcp" };
-  assert.equal(hooks.routePublicStatus(tcp), "metadata only");
-  assert.equal(hooks.routePublicStatus({ ...tcp, enabled: false }), "metadata only");
-  assert.equal(hooks.routeHealthy(tcp), false);
+  const tcpWaiting = { ...base, protocol: "tcp", public_status: "waiting_agent" };
+  assert.equal(hooks.routePublicStatus(tcpWaiting), "waiting_agent");
+  assert.equal(hooks.routeHealthy(tcpWaiting), false);
+  const tcpPublished = { ...tcpWaiting, public_status: "published" };
+  assert.equal(hooks.routePublicStatus(tcpPublished), "published");
+  assert.equal(hooks.routeHealthy(tcpPublished), true);
+  assert.equal(hooks.routePublicStatus({ ...tcpPublished, enabled: false }), "disabled");
   for (const tunnel_status of ["UP", " up ", "connected", "healthy", "active", "ready", "down"]) {
     const route = { ...base, tunnel_status };
-    assert.equal(hooks.routePublicStatus(route), "pending", tunnel_status);
+    assert.equal(hooks.routePublicStatus(route), "waiting_agent", tunnel_status);
     assert.equal(hooks.routeHealthy(route), false, tunnel_status);
   }
-  assert.equal(hooks.routePublicStatus({ ...base, observed_revision: 2 }), "pending");
+  assert.equal(hooks.routePublicStatus({ ...base, observed_revision: 2 }), "waiting_agent");
   assert.equal(hooks.routeHealthy({ ...base, observed_revision: 2 }), false);
   assert.equal(hooks.routePublicStatus({ ...base, enabled: false }), "disabled");
   assert.equal(hooks.routeHealthy({ ...base, local_status: "down" }), false);

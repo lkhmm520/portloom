@@ -198,6 +198,47 @@ func TestRoutesCannotUseControlPlaneDomain(t *testing.T) {
 	}
 }
 
+func TestTCPRouteRequiresEnabledEdgeAndNonReservedPort(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.CreateEnrollmentToken(context.Background(), "enroll", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	agent, _, err := s.ConsumeEnrollmentToken(context.Background(), "enroll", "nas-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"client_id": agent.ID, "name": "ssh", "protocol": "tcp", "public_port": 24443,
+		"local_host": "127.0.0.1", "local_port": 22, "tunnel_group": "tcp", "enabled": true,
+	}
+	disabled := New(s, Config{AdminToken: "admin-secret"})
+	response := performJSON(t, disabled, http.MethodPost, "/api/v1/routes", payload, "admin-secret")
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("tcp_edge_disabled")) {
+		t.Fatalf("disabled TCP edge status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	reserved := New(s, Config{AdminToken: "admin-secret", TCPEnabled: true, TCPPortReserved: func(port int) bool { return port == 24443 }})
+	response = performJSON(t, reserved, http.MethodPost, "/api/v1/routes", payload, "admin-secret")
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("reserved_tcp_port")) {
+		t.Fatalf("reserved TCP port status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	enabled := New(s, Config{
+		AdminToken: "admin-secret", TCPEnabled: true,
+		TCPPortReserved: func(int) bool { return false },
+		RoutePublicStatus: func(domain.Route) string { return "waiting_agent" },
+	})
+	response = performJSON(t, enabled, http.MethodPost, "/api/v1/routes", payload, "admin-secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("enabled TCP edge status=%d body=%s", response.Code, response.Body.String())
+	}
+	var route domain.Route
+	decodeResponse(t, response, &route)
+	if route.Protocol != domain.ProtocolTCP || route.PublicPort != 24443 || route.PublicStatus != "waiting_agent" {
+		t.Fatalf("created route=%#v", route)
+	}
+}
+
 func performJSON(t *testing.T, handler http.Handler, method, path string, body any, bearer string) *httptest.ResponseRecorder {
 	t.Helper()
 	var encoded bytes.Buffer

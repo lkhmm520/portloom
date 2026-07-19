@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func validRoute() Route {
 	return Route{Name: "MoviePilot", Protocol: ProtocolHTTP, Domain: "MP.961121.XYZ.", LocalHost: "127.0.0.1", LocalPort: 3333, TunnelGroup: "web", Enabled: true}
@@ -71,13 +74,39 @@ func TestRouteValidateRejectsDomainForTCP(t *testing.T) {
 }
 
 func TestRouteValidateRejectsInvalidTCPPublicPort(t *testing.T) {
-	for _, port := range []int{-1, 65536} {
+	for _, port := range []int{0, -1, 65536} {
 		r := validRoute()
 		r.Protocol = ProtocolTCP
 		r.Domain = ""
 		r.PublicPort = port
 		if err := r.Validate(); err == nil {
 			t.Fatalf("TCP public port %d accepted", port)
+		}
+	}
+}
+
+func TestPublicationReadyRequiresFreshAgentHeartbeat(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	route := Route{
+		Enabled: true, DesiredRevision: 3, ObservedRevision: 3, TunnelStatus: "up",
+		AgentLastSeenAt: now.Add(-30 * time.Second),
+	}
+	if !route.PublicationReadyAt(now) {
+		t.Fatal("fresh converged route was not ready")
+	}
+	route.AgentLastSeenAt = now.Add(-2 * time.Minute)
+	if route.PublicationReadyAt(now) {
+		t.Fatal("stale Agent heartbeat left route published")
+	}
+	route.AgentLastSeenAt = time.Time{}
+	if route.PublicationReadyAt(now) {
+		t.Fatal("missing Agent heartbeat left route published")
+	}
+	route.AgentLastSeenAt = now
+	for _, status := range []string{"UP", " up ", "connected"} {
+		route.TunnelStatus = status
+		if route.PublicationReadyAt(now) {
+			t.Fatalf("non-canonical tunnel status %q was published", status)
 		}
 	}
 }

@@ -111,14 +111,15 @@
       <div class="form-grid">
         <label class="span-2"><span data-i18n="form.name">Name</span><input name="name" required maxlength="80" placeholder="Media server" data-i18n-placeholder="form.namePlaceholder"></label>
         <label><span data-i18n="form.client">Client</span><select id="route-client" name="client_id" required></select></label>
-        <label><span data-i18n="form.protocol">Protocol</span><select id="route-protocol" disabled><option value="http">HTTP/HTTPS</option></select></label>
-        <label class="span-2"><span data-i18n="form.publicDomain">Public domain</span><input name="domain" required maxlength="253" placeholder="media.example.com"></label>
+        <label><span data-i18n="form.protocol">Protocol</span><select id="route-protocol" name="protocol"><option value="http">HTTP/HTTPS</option><option value="tcp">TCP</option></select></label>
+        <label id="route-domain-field" class="span-2"><span data-i18n="form.publicDomain">Public domain</span><input name="domain" maxlength="253" placeholder="media.example.com"></label>
+        <label id="route-public-port-field" hidden><span data-i18n="form.publicPort">Public TCP port</span><input name="public_port" type="number" min="1" max="65535" placeholder="24443"></label>
         <label><span data-i18n="form.localHost">Local host</span><input name="local_host" required value="127.0.0.1" placeholder="127.0.0.1"></label>
         <label><span data-i18n="form.localPort">Local port</span><input name="local_port" type="number" min="1" max="65535" required placeholder="8080"></label>
         <label><span data-i18n="form.tunnelGroup">Tunnel group</span><input name="tunnel_group" value="web" required maxlength="80"></label>
         <label class="switch-row span-2"><input name="enabled" type="checkbox" checked><span class="switch" aria-hidden="true"></span><span><strong data-i18n="form.enabled">Enabled</strong><small data-i18n="form.enabledDescription">Include this route in the desired agent configuration.</small></span></label>
       </div>
-      <p class="muted" data-i18n="routes.boundaryShort">PortLoom's built-in public ingress fully supports HTTP/HTTPS routes only.</p>
+      <p class="muted" data-i18n="routes.boundaryShort">HTTP/HTTPS routes use domains; TCP routes publish an explicit VPS port after the Agent converges.</p>
       <p id="route-form-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button" data-i18n="common.cancel">Cancel</button><button class="button primary" type="submit" data-i18n="form.saveRoute">Save route</button></div>
     </form>
@@ -129,7 +130,7 @@
       <div class="dialog-heading"><div><p class="eyebrow" data-i18n="agent.secondHost">Second Docker host</p><h2 data-i18n="agent.add">Add an Agent</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close" data-i18n-aria-label="common.close">×</button></div>
       <p class="muted" data-i18n="agent.description">Enter the address this Agent can use to reach the Server. PortLoom will generate one command for the NAS or internal host.</p>
       <div class="form-grid">
-        <label class="span-2"><span data-i18n="agent.name">Agent name</span><input name="name" required maxlength="80" placeholder="home-nas"></label>
+        <label class="span-2"><span data-i18n="agent.name">Agent name</span><input name="name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="home-nas"></label>
         <label class="span-2"><span data-i18n="agent.serverURL">Server URL</span><input name="server_url" type="url" required placeholder="https://portloom.example.com"></label>
         <label><span data-i18n="agent.publicHost">Public Server host</span><input name="ssh_host" required maxlength="253" placeholder="vps.example.com"></label>
         <label><span data-i18n="agent.sshPort">SSH tunnel port</span><input name="ssh_port" type="number" min="1" max="65535" required value="2222"></label>

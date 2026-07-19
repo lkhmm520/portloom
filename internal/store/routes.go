@@ -119,6 +119,7 @@ func (s *Store) UpdateRoute(ctx context.Context, id string, update domain.Route)
 	update.LocalStatus = current.LocalStatus
 	update.TunnelStatus = current.TunnelStatus
 	update.LastError = current.LastError
+	update.AgentLastSeenAt = current.AgentLastSeenAt
 	if err := update.Validate(); err != nil {
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -295,7 +296,8 @@ func bumpDesiredRevision(ctx context.Context, tx *sql.Tx, agentID string) (int64
 
 const routeSelect = `SELECT id, client_id, name, protocol, domain, local_host, local_port,
 	remote_port, public_port, tunnel_group, enabled, desired_revision, observed_revision,
-	local_status, tunnel_status, last_error, created_at, updated_at FROM routes`
+	local_status, tunnel_status, last_error,
+	(SELECT last_seen_at FROM agents WHERE id = routes.client_id), created_at, updated_at FROM routes`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -314,15 +316,19 @@ func getRoute(ctx context.Context, query interface {
 func scanRoute(scanner rowScanner) (domain.Route, error) {
 	var route domain.Route
 	var protocol string
+	var agentLastSeen sql.NullString
 	var createdAt, updatedAt string
 	err := scanner.Scan(&route.ID, &route.ClientID, &route.Name, &protocol, &route.Domain,
 		&route.LocalHost, &route.LocalPort, &route.RemotePort, &route.PublicPort,
 		&route.TunnelGroup, &route.Enabled, &route.DesiredRevision, &route.ObservedRevision,
-		&route.LocalStatus, &route.TunnelStatus, &route.LastError, &createdAt, &updatedAt)
+		&route.LocalStatus, &route.TunnelStatus, &route.LastError, &agentLastSeen, &createdAt, &updatedAt)
 	if err != nil {
 		return domain.Route{}, err
 	}
 	route.Protocol = domain.Protocol(protocol)
+	if agentLastSeen.Valid {
+		route.AgentLastSeenAt = parseTime(agentLastSeen.String)
+	}
 	route.CreatedAt = parseTime(createdAt)
 	route.UpdatedAt = parseTime(updatedAt)
 	return route, nil

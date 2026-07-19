@@ -51,7 +51,7 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	}
 	if err := agent.RegisterManagedSSHKeyWithConfig(ctx, client, agent.ManagedSSHRegistrationConfig{
 		PublicKeyPath: cfg.SSHPublicKeyFile, ReadyPath: cfg.ManagedSSHReadyPath, ReadyValue: cfg.ManagedSSHReadyNonce,
-		VerifyTransport: runner.EnsureMaster,
+		VerifyTransport: runner.EnsureMaster, DeferReady: true,
 	}); err != nil {
 		return fmt.Errorf("configure managed SSH access: %w", err)
 	}
@@ -65,6 +65,12 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	}
 	reconciler := agent.NewReconciler(runner, agent.TCPHealthChecker{Timeout: cfg.HealthTimeout}, reconcilerOptions...)
 	syncer := agent.NewSyncer(client, reconciler)
+	if err := syncer.SyncOnce(ctx); err != nil {
+		return fmt.Errorf("complete initial synchronization: %w", err)
+	}
+	if err := agent.MarkManagedSSHReady(cfg.ManagedSSHReadyPath, cfg.ManagedSSHReadyNonce); err != nil {
+		return fmt.Errorf("mark Agent ready: %w", err)
+	}
 	err = syncer.Run(ctx, cfg.PollInterval, func(syncErr error) { log.Printf("agent synchronization failed: %v", syncErr) })
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

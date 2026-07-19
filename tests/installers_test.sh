@@ -34,6 +34,8 @@ grep -q 'cap_add: \[NET_BIND_SERVICE\]' "$server"
 ! grep -q 'container_name: portloom-caddy' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED: "true"' "$server"
 grep -q 'TM_MANAGED_SSH_ISOLATED=true' "$agent"
+grep -q '/opt/bin/flock' "$agent" || fail 'Agent installer does not probe the QNAP Entware flock path'
+grep -q '/opt/bin/flock' "$server" || fail 'Server installer does not probe the QNAP Entware flock path'
 
 args=("${base_agent[@]}"); args[1]=http://remote.example.com
 expect_reject 'invalid --server-url' "$agent" "${args[@]}"
@@ -374,7 +376,7 @@ grep -q -- "$immutable_agent_image" "$FAKE_DOCKER_LOG" || fail 'Agent recovery d
 expect_reject 'running Agent identity does not match this install directory' env PORTLOOM_HOME="$tmp/recover-agent" FAKE_DOCKER_INSPECT_RESULT="$tmp/other-agent|agent|$immutable_agent_image|true" "$agent" "${base_agent[@]}"
 expect_reject 'running Agent container is not active' env PORTLOOM_HOME="$tmp/recover-agent" FAKE_DOCKER_INSPECT_RESULT="$tmp/recover-agent|agent|$immutable_agent_image|false" "$agent" "${base_agent[@]}"
 old_nonce=$(head -n 1 "$FAKE_NONCE_LOG")
-expect_reject 'has not established managed SSH' env PORTLOOM_HOME="$tmp/recover-agent" FAKE_AGENT_READY=stale PORTLOOM_READY_ATTEMPTS=1 "$agent" "${base_agent[@]}"
+expect_reject 'was not ready after 1 attempts' env PORTLOOM_HOME="$tmp/recover-agent" FAKE_AGENT_READY=stale PORTLOOM_READY_ATTEMPTS=1 "$agent" "${base_agent[@]}"
 [ "$(tr -d '\n' < "$tmp/recover-agent/data/managed-ssh.ready")" = "$old_nonce" ] || fail 'old-generation nonce injection was not exercised'
 
 mkdir -p "$tmp/mismatch-agent/data"
@@ -395,7 +397,11 @@ mkdir -p "$tmp/rebuild-agent/data/ssh"
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/rebuild-agent/data/ssh/id_ed25519"
 rm "$tmp/rebuild-agent/data/ssh/id_ed25519.pub"
 : > "$FAKE_DOCKER_LOG"
-PORTLOOM_HOME="$tmp/rebuild-agent" FAKE_AGENT_READY=1 "$agent" "${base_agent[@]}" >/dev/null
+rebuild_output=$(PORTLOOM_HOME="$tmp/rebuild-agent" FAKE_AGENT_READY=1 "$agent" "${base_agent[@]}")
+printf '%s' "$rebuild_output" | grep -Fq '[1/8] Checking host prerequisites' || fail "Agent install did not show prerequisite progress: $rebuild_output"
+printf '%s' "$rebuild_output" | grep -Fq '[5/8] Starting Agent and enrolling' || fail "Agent install did not show enrollment progress: $rebuild_output"
+printf '%s' "$rebuild_output" | grep -Fq '[8/8] Verifying token-free restart' || fail "Agent install did not show final verification progress: $rebuild_output"
+printf '%s' "$rebuild_output" | grep -Fq 'PortLoom Agent is installed and enrolled as nas.' || fail "Agent install did not show completion: $rebuild_output"
 [[ "$(env_value "$tmp/rebuild-agent/.env" PORTLOOM_AGENT_IMAGE_ID)" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'fresh Agent install did not persist an immutable image ID'
 ssh-keygen -lf "$tmp/rebuild-agent/data/ssh/id_ed25519.pub" >/dev/null || fail 'missing public key was not rebuilt from private key'
 grep -q 'ssh-keygen.*-y' "$FAKE_DOCKER_LOG" || fail 'ssh-keygen -y was not used to rebuild public key'

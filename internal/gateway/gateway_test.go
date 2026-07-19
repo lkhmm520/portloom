@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/managedssh"
@@ -56,7 +57,7 @@ func TestGatewayDynamicallyProxiesEnabledConvergedRouteByHost(t *testing.T) {
 	_, port := newBackend(t)
 	source := &staticRouteSource{routes: []domain.Route{{
 		Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
-		Enabled: true, DesiredRevision: 3, ObservedRevision: 3, TunnelStatus: "up",
+		Enabled: true, DesiredRevision: 3, ObservedRevision: 3, TunnelStatus: "up", AgentLastSeenAt: time.Now(),
 	}}}
 	handler := New(source)
 
@@ -88,19 +89,19 @@ func TestGatewayRejectsRouteUnlessTunnelIsUpAndRevisionConverged(t *testing.T) {
 		{
 			name: "observed revision is stale",
 			route: domain.Route{Enabled: true, DesiredRevision: 2, ObservedRevision: 1,
-				TunnelStatus: "up"},
+				TunnelStatus: "up", AgentLastSeenAt: time.Now()},
 			status: http.StatusNotFound,
 		},
 		{
 			name: "observed revision matches desired",
 			route: domain.Route{Enabled: true, DesiredRevision: 2, ObservedRevision: 2,
-				TunnelStatus: "up"},
+				TunnelStatus: "up", AgentLastSeenAt: time.Now()},
 			status: http.StatusOK,
 		},
 		{
 			name: "observed revision is newer than desired",
 			route: domain.Route{Enabled: true, DesiredRevision: 2, ObservedRevision: 3,
-				TunnelStatus: "up"},
+				TunnelStatus: "up", AgentLastSeenAt: time.Now()},
 			status: http.StatusOK,
 		},
 	}
@@ -130,7 +131,7 @@ func TestGatewayRebuildsForwardedHeaders(t *testing.T) {
 	}
 	port, _ := strconv.Atoi(portText)
 	route := domain.Route{Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
-		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up"}
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up", AgentLastSeenAt: time.Now()}
 	request := httptest.NewRequest(http.MethodGet, "http://gateway/", nil)
 	request.Host = "app.example.com"
 	request.RemoteAddr = "203.0.113.10:54321"
@@ -156,7 +157,7 @@ func TestGatewayDoesNotExposeLoopbackDialErrors(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	route := domain.Route{Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
-		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up"}
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up", AgentLastSeenAt: time.Now()}
 	response := serveGateway(t, New(&staticRouteSource{routes: []domain.Route{route}}))
 	if response.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d", response.Code)
@@ -185,7 +186,7 @@ func TestGatewayUsesRouteAgentIsolatedBindAddress(t *testing.T) {
 	defer backend.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 	route := domain.Route{ClientID: agentID, Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
-		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up"}
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up", AgentLastSeenAt: time.Now()}
 	response := serveGateway(t, New(&staticRouteSource{routes: []domain.Route{route}}, WithIsolatedAgentBindings()))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
@@ -211,7 +212,7 @@ func TestGatewayReusesUpstreamTransportConnections(t *testing.T) {
 	port, _ := strconv.Atoi(portText)
 	handler := New(&staticRouteSource{routes: []domain.Route{{
 		Protocol: domain.ProtocolHTTP, Domain: "app.example.com", RemotePort: port,
-		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up",
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up", AgentLastSeenAt: time.Now(),
 	}}})
 	for range 2 {
 		response := serveGateway(t, handler)

@@ -22,6 +22,7 @@ import (
 	"github.com/lkhmm520/portloom/internal/edge"
 	"github.com/lkhmm520/portloom/internal/gateway"
 	"github.com/lkhmm520/portloom/internal/store"
+	"github.com/lkhmm520/portloom/internal/tcpedge"
 )
 
 var (
@@ -45,6 +46,7 @@ type config struct {
 	TLSAskAddr           string
 	EdgeHTTPAddr         string
 	EdgeHTTPSAddr        string
+	TCPBindHost          string
 	TLSCacheDir          string
 	ACMEEmail            string
 	PortRangeStart       int
@@ -86,6 +88,7 @@ func loadConfig(getenv envLookup) (config, error) {
 	setString("TM_TLS_ASK_ADDR", &cfg.TLSAskAddr)
 	setString("TM_EDGE_HTTP_ADDR", &cfg.EdgeHTTPAddr)
 	setString("TM_EDGE_HTTPS_ADDR", &cfg.EdgeHTTPSAddr)
+	setString("TM_TCP_EDGE_BIND_HOST", &cfg.TCPBindHost)
 	setString("TM_TLS_CACHE_DIR", &cfg.TLSCacheDir)
 	setString("TM_ACME_EMAIL", &cfg.ACMEEmail)
 	cfg.AdminToken = strings.TrimSpace(getenv("TM_ADMIN_TOKEN"))
@@ -149,6 +152,11 @@ func loadConfig(getenv envLookup) (config, error) {
 	if cfg.ManagedSSHPort < 1 || cfg.ManagedSSHPort > 65535 {
 		return config{}, errors.New("invalid managed SSH port")
 	}
+	if cfg.TCPBindHost != "" {
+		if net.ParseIP(cfg.TCPBindHost) == nil {
+			return config{}, errors.New("TM_TCP_EDGE_BIND_HOST must be a literal IPv4 or IPv6 address")
+		}
+	}
 	if cfg.PortRangeStart < 1024 || cfg.PortRangeEnd > 65535 || cfg.PortRangeStart > cfg.PortRangeEnd {
 		return config{}, errors.New("invalid tunnel port range")
 	}
@@ -193,6 +201,27 @@ func envInt(getenv envLookup, key string, fallback int) (int, error) {
 	return value, nil
 }
 
+func tcpPortReserved(cfg config, port int) bool {
+	if port < 1 || port > 65535 || port == cfg.ManagedSSHPort ||
+		(port >= cfg.PortRangeStart && port <= cfg.PortRangeEnd) {
+		return true
+	}
+	for _, address := range []string{cfg.ListenAddr, cfg.GatewayAddr, cfg.TLSAskAddr, cfg.EdgeHTTPAddr, cfg.EdgeHTTPSAddr} {
+		if address == "" {
+			continue
+		}
+		_, value, err := net.SplitHostPort(address)
+		if err != nil {
+			continue
+		}
+		reserved, err := strconv.Atoi(value)
+		if err == nil && port == reserved {
+			return true
+		}
+	}
+	return false
+}
+
 func run(ctx context.Context, getenv envLookup) error {
 	cfg, err := loadConfig(getenv)
 	if err != nil {
@@ -215,11 +244,24 @@ func run(ctx context.Context, getenv envLookup) error {
 		}
 	}
 
+	var tcpManager *tcpedge.Manager
+	if cfg.TCPBindHost != "" {
+		tcpOptions := []tcpedge.Option{tcpedge.WithBindHost(cfg.TCPBindHost)}
+		if cfg.ManagedSSHIsolated {
+			tcpOptions = append(tcpOptions, tcpedge.WithIsolatedAgentBindings())
+		}
+		tcpManager = tcpedge.New(state, tcpOptions...)
+	}
 	apiConfig := api.Config{
 		AdminToken: cfg.AdminToken, EnrollmentTTL: cfg.EnrollmentTTL, AuthorizedKeysPath: cfg.AuthorizedKeysPath,
 		SSHHostPublicKeyPath: cfg.SSHHostPublicKeyPath, ManagedSSHPort: cfg.ManagedSSHPort,
 		ManagedSSHIsolated: cfg.ManagedSSHIsolated, ServerVersion: version,
 		PublicHost: cfg.PublicHost, TLSAskToken: cfg.TLSAskToken,
+		TCPEnabled: tcpManager != nil, TCPBindHost: cfg.TCPBindHost,
+		TCPPortReserved: func(port int) bool { return tcpPortReserved(cfg, port) },
+	}
+	if tcpManager != nil {
+		apiConfig.RoutePublicStatus = tcpManager.PublicStatus
 	}
 	controlHandler := newMainHandler(api.New(state, apiConfig), cfg.WebDir)
 	control := newControlServer(cfg.ListenAddr, controlHandler)
@@ -262,6 +304,16 @@ func run(ctx context.Context, getenv envLookup) error {
 			serverSpec{name: "public HTTPS edge", server: newEdgeServer(cfg.EdgeHTTPSAddr, router, tlsConfig), tls: true},
 		)
 	}
+	var tcpDone <-chan error
+	stopTCP := func() {}
+	if tcpManager != nil {
+		tcpContext, cancelTCP := context.WithCancel(ctx)
+		stopTCP = cancelTCP
+		completed := make(chan error, 1)
+		tcpDone = completed
+		go func() { completed <- tcpManager.Run(tcpContext) }()
+		log.Printf("dynamic TCP edge enabled on %s", cfg.TCPBindHost)
+	}
 	errorsChannel := make(chan error, len(servers))
 	serve := func(spec serverSpec) {
 		var err error
@@ -286,12 +338,30 @@ func run(ctx context.Context, getenv envLookup) error {
 	select {
 	case <-ctx.Done():
 	case runErr = <-errorsChannel:
+	case tcpErr := <-tcpDone:
+		tcpDone = nil
+		if tcpErr != nil && !errors.Is(tcpErr, context.Canceled) {
+			runErr = fmt.Errorf("TCP edge: %w", tcpErr)
+		}
 	}
+	stopTCP()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, spec := range servers {
 		if err := spec.server.Shutdown(shutdownCtx); err != nil && runErr == nil {
 			runErr = err
+		}
+	}
+	if tcpDone != nil {
+		select {
+		case tcpErr := <-tcpDone:
+			if tcpErr != nil && !errors.Is(tcpErr, context.Canceled) && runErr == nil {
+				runErr = tcpErr
+			}
+		case <-shutdownCtx.Done():
+			if runErr == nil {
+				runErr = errors.New("TCP edge shutdown timed out")
+			}
 		}
 	}
 	return runErr

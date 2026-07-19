@@ -12,6 +12,8 @@ Usage: install-server.sh --domain portloom.example.com [options]
   --version TAG       PortLoom image tag (default: latest)
   --migrate-native-edge
                       Explicitly migrate a legacy installer-managed Caddy deployment
+  --enable-tcp-edge   Enable explicit public TCP route listeners (binds 0.0.0.0 by default)
+                      Override with PORTLOOM_TCP_EDGE_BIND_HOST before running
 
 PortLoom itself owns public TCP 80 and 443, obtains and renews ACME
 certificates, and routes enabled HTTP hostnames. No Caddy/Nginx/NPM service is
@@ -19,9 +21,19 @@ installed. Point the management hostname and route hostnames (or one wildcard
 record) at this host before opening them in a browser.
 EOF
 }
+resolve_flock() {
+  local candidate
+  candidate=$(command -v flock 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  for candidate in /opt/bin/flock /opt/sbin/flock; do
+    if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  done
+  return 1
+}
 
 domain=""; home="${PORTLOOM_HOME:-$HOME/.portloom/server}"; web_port=8080; ssh_port=2222; version=latest
-migrate_native_edge=false
+migrate_native_edge=false; enable_tcp_edge=false
+tcp_edge_bind_host=""
 edge_http_port=${PORTLOOM_HTTP_PORT:-80}; edge_https_port=${PORTLOOM_HTTPS_PORT:-443}
 gateway_port=${PORTLOOM_GATEWAY_PORT:-8081}
 edge_verify_attempts=${PORTLOOM_EDGE_VERIFY_ATTEMPTS:-30}
@@ -30,6 +42,7 @@ while [ "$#" -gt 0 ]; do
     --domain) domain=${2:-}; shift 2;; --home) home=${2:-}; shift 2;;
     --web-port) web_port=${2:-}; shift 2;; --ssh-port) ssh_port=${2:-}; shift 2;;
     --version) version=${2:-}; shift 2;; --migrate-native-edge) migrate_native_edge=true; shift;;
+    --enable-tcp-edge) enable_tcp_edge=true; tcp_edge_bind_host=${PORTLOOM_TCP_EDGE_BIND_HOST:-0.0.0.0}; shift;;
     -h|--help) usage; exit 0;; *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
   esac
 done
@@ -58,6 +71,11 @@ for ((i=0; i<${#ports[@]}; i++)); do for ((j=i+1; j<${#ports[@]}; j++)); do
 done; done
 command -v docker >/dev/null || { echo 'Docker is required' >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo 'Docker Compose v2 is required' >&2; exit 1; }
+flock_bin=$(resolve_flock) || {
+  echo 'flock is required to serialize Server installation' >&2
+  echo 'QNAP/Entware: run /opt/bin/opkg install flock, then rerun this command.' >&2
+  exit 1
+}
 umask 077
 server_image="${PORTLOOM_SERVER_IMAGE_OVERRIDE:-ghcr.io/lkhmm520/portloom-server:$version}"
 sshd_image="${PORTLOOM_SSHD_IMAGE_OVERRIDE:-ghcr.io/lkhmm520/portloom-sshd:$version}"
@@ -68,8 +86,7 @@ case "$home" in "$portloom_root"|"$portloom_root"/*) mkdir -p "$portloom_root"; 
 mkdir -p "$home/server-data" "$home/ssh-auth" "$home/ssh-hostkeys"
 home=$(cd "$home" && pwd -L)
 chmod 0711 "$home"
-command -v flock >/dev/null || { echo 'flock is required to serialize Server installation' >&2; exit 1; }
-exec 9>"$home/.install.lock"; chmod 0600 "$home/.install.lock"; flock -n 9 || { echo "another Server installation is already running in $home" >&2; exit 1; }
+exec 9>"$home/.install.lock"; chmod 0600 "$home/.install.lock"; "$flock_bin" -n 9 || { echo "another Server installation is already running in $home" >&2; exit 1; }
 docker() { command docker "$@" 9>&-; }
 chmod 0755 "$home/ssh-hostkeys"
 chmod 0700 "$home/server-data" "$home/ssh-auth" 2>/dev/null || true
@@ -119,6 +136,14 @@ if [ -f "$home/.env" ]; then
   existing_sshd_image_id=$(env_value PORTLOOM_SSHD_IMAGE_ID || true)
   existing_http_port=$(env_value PORTLOOM_HTTP_PORT || true)
   existing_https_port=$(env_value PORTLOOM_HTTPS_PORT || true)
+  existing_tcp_edge_bind_host=$(env_value PORTLOOM_TCP_EDGE_BIND_HOST || true)
+  if [ -n "$existing_tcp_edge_bind_host" ]; then
+    if [ "$enable_tcp_edge" = true ] && [ "$tcp_edge_bind_host" != "$existing_tcp_edge_bind_host" ]; then
+      echo 'existing TCP Edge bind host does not match PORTLOOM_TCP_EDGE_BIND_HOST' >&2
+      exit 1
+    fi
+    tcp_edge_bind_host=$existing_tcp_edge_bind_host
+  fi
   legacy_http_port=$(env_value PORTLOOM_CADDY_HTTP_PORT || true)
   legacy_https_port=$(env_value PORTLOOM_CADDY_HTTPS_PORT || true)
   if [ -z "$existing_http_port" ] && [ -z "$existing_https_port" ] && [ -n "$legacy_http_port" ] && [ -n "$legacy_https_port" ]; then
@@ -165,7 +190,9 @@ if [ -f "$home/.env" ]; then
     previous_sshd_image_id=$(resolve_existing_image_id portloom-sshd sshd "$existing_sshd_image_id") || exit 1
     [ "$existing_server_image" != "$server_image" ] || pull_server=false
     [ "$existing_sshd_image" != "$sshd_image" ] || pull_sshd=false
-    if [ "$pull_server" = true ] || [ "$pull_sshd" = true ]; then
+    tcp_config_change=false
+    [ "$existing_tcp_edge_bind_host" = "$tcp_edge_bind_host" ] || tcp_config_change=true
+    if [ "$pull_server" = true ] || [ "$pull_sshd" = true ] || [ "$tcp_config_change" = true ]; then
       native_upgrade=true
       backup_dir="$home/native-upgrade-backup-$version"
       backup_next="$home/.native-upgrade-backup-$version.next"
@@ -224,7 +251,8 @@ printf '%s\n' \
   "PORTLOOM_SERVER_IMAGE=$server_image" "PORTLOOM_SERVER_IMAGE_ID=$target_server_image_id" \
   "PORTLOOM_SSHD_IMAGE=$sshd_image" "PORTLOOM_SSHD_IMAGE_ID=$target_sshd_image_id" "PORTLOOM_DOMAIN=$domain" \
   "PORTLOOM_WEB_PORT=$web_port" "PORTLOOM_SSH_PORT=$ssh_port" "PORTLOOM_GATEWAY_PORT=$gateway_port" \
-  "PORTLOOM_HTTP_PORT=$edge_http_port" "PORTLOOM_HTTPS_PORT=$edge_https_port" "TM_ADMIN_TOKEN=$admin_token" > "$home/.env.next"
+  "PORTLOOM_HTTP_PORT=$edge_http_port" "PORTLOOM_HTTPS_PORT=$edge_https_port" \
+  "PORTLOOM_TCP_EDGE_BIND_HOST=$tcp_edge_bind_host" "TM_ADMIN_TOKEN=$admin_token" > "$home/.env.next"
 chmod 600 "$home/.env.next"
 cat > "$home/compose.yml.next" <<'EOF'
 name: portloom
@@ -269,6 +297,7 @@ services:
       TM_SSH_HOST_PUBLIC_KEY_PATH: /ssh-hostkeys/ssh_host_ed25519_key.pub
       TM_MANAGED_SSH_PORT: ${PORTLOOM_SSH_PORT}
       TM_MANAGED_SSH_ISOLATED: "true"
+      TM_TCP_EDGE_BIND_HOST: ${PORTLOOM_TCP_EDGE_BIND_HOST}
     volumes:
       - ./server-data:/data
       - ./ssh-auth:/ssh-auth
@@ -321,7 +350,7 @@ if [ "$legacy_migration" = true ]; then
   (cd "$home" && docker compose --project-directory "$home" --env-file migration-backup-v0.3.0/.env -f migration-backup-v0.3.0/compose.yml stop caddy) 9>&- || activation_failed=true
 fi
 if [ "$activation_failed" = false ]; then
-  (cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE_ID="$target_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$target_sshd_image_id" docker compose --env-file .env -f compose.yml up -d --remove-orphans --pull never) 9>&- || activation_failed=true
+  (cd "$home" && env -u PORTLOOM_DOMAIN -u PORTLOOM_WEB_PORT -u PORTLOOM_SSH_PORT -u PORTLOOM_GATEWAY_PORT -u PORTLOOM_HTTP_PORT -u PORTLOOM_HTTPS_PORT -u PORTLOOM_TCP_EDGE_BIND_HOST -u TM_ADMIN_TOKEN PORTLOOM_SERVER_IMAGE_ID="$target_server_image_id" PORTLOOM_SSHD_IMAGE_ID="$target_sshd_image_id" docker compose --env-file .env -f compose.yml up -d --remove-orphans --pull never) 9>&- || activation_failed=true
 fi
 if [ "$activation_failed" = false ] && ! verify_public_https; then
   activation_failed=true
@@ -363,3 +392,8 @@ if [ "$activation_failed" = true ]; then
 fi
 printf '\nPortLoom Server is installed.\nWebUI: https://%s\nAdministrator token: %s\nFiles: %s\n\n' "$domain" "$admin_token" "$home"
 printf 'Open TCP %s, %s and %s on the public-host firewall. Keep .env private.\n' "$edge_http_port" "$edge_https_port" "$ssh_port"
+if [ -n "$tcp_edge_bind_host" ]; then
+  printf 'TCP Edge is enabled on %s; open only the public ports explicitly configured in WebUI.\n' "$tcp_edge_bind_host"
+else
+  printf 'TCP Edge is disabled. Rerun this installer with --enable-tcp-edge to opt in.\n'
+fi

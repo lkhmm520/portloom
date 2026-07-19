@@ -13,6 +13,7 @@ import (
 	"github.com/lkhmm520/portloom/internal/agent"
 	"github.com/lkhmm520/portloom/internal/managedssh"
 	"github.com/lkhmm520/portloom/internal/sshctl"
+	"github.com/lkhmm520/portloom/internal/sysinfo"
 )
 
 var (
@@ -64,7 +65,8 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 		reconcilerOptions = append(reconcilerOptions, agent.WithRemoteBindHost(bindAddress))
 	}
 	reconciler := agent.NewReconciler(runner, agent.TCPHealthChecker{Timeout: cfg.HealthTimeout}, reconcilerOptions...)
-	syncer := agent.NewSyncer(client, reconciler)
+	sampler := sysinfo.NewSampler()
+	syncer := agent.NewSyncer(client, reconciler, agent.WithSystemStats(sampler.Sample))
 	if err := syncer.SyncOnce(ctx); err != nil {
 		return fmt.Errorf("complete initial synchronization: %w", err)
 	}

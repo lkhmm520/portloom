@@ -164,25 +164,144 @@ func TestRouteLifecycleAllocatesPortsAndAdvancesRevision(t *testing.T) {
 	}
 }
 
-func TestHTTPDomainEnabledUsesExactEnabledHTTPRoute(t *testing.T) {
+func TestWebDomainEnabledUsesExactEnabledRouteOfMatchingScheme(t *testing.T) {
 	ctx := context.Background()
-	s, agent := enrolledStore(t, 31100, 31102)
+	s, agent := enrolledStore(t, 31100, 31103)
 	for _, route := range []domain.Route{
-		{ClientID: agent.ID, Name: "enabled", Protocol: domain.ProtocolHTTP, Domain: "app.example.com", LocalHost: "localhost", LocalPort: 8080, Enabled: true},
-		{ClientID: agent.ID, Name: "disabled", Protocol: domain.ProtocolHTTP, Domain: "off.example.com", LocalHost: "localhost", LocalPort: 8081, Enabled: false},
+		{ClientID: agent.ID, Name: "enabled", Protocol: domain.ProtocolHTTPS, Domain: "app.example.com", LocalHost: "localhost", LocalPort: 8080, Enabled: true},
+		{ClientID: agent.ID, Name: "disabled", Protocol: domain.ProtocolHTTPS, Domain: "off.example.com", LocalHost: "localhost", LocalPort: 8081, Enabled: false},
+		{ClientID: agent.ID, Name: "plain", Protocol: domain.ProtocolHTTP, Domain: "plain.example.com", LocalHost: "localhost", LocalPort: 8082, Enabled: true},
 	} {
 		if _, err := s.CreateRoute(ctx, route); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for domainName, want := range map[string]bool{"app.example.com": true, "off.example.com": false, "missing.example.com": false} {
-		got, err := s.HTTPDomainEnabled(ctx, domainName)
+	for domainName, want := range map[string]bool{"app.example.com": true, "off.example.com": false, "plain.example.com": false, "missing.example.com": false} {
+		got, err := s.HTTPSDomainEnabled(ctx, domainName)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != want {
-			t.Fatalf("HTTPDomainEnabled(%q)=%v want %v", domainName, got, want)
+			t.Fatalf("HTTPSDomainEnabled(%q)=%v want %v", domainName, got, want)
 		}
+	}
+	got, err := s.PlainHTTPDomainEnabled(ctx, "plain.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("PlainHTTPDomainEnabled missed the enabled plain-HTTP route")
+	}
+}
+
+func TestSameDomainSupportsMultipleRoutesByPathPortAndScheme(t *testing.T) {
+	ctx := context.Background()
+	s, agent := enrolledStore(t, 31200, 31210)
+	routes := []domain.Route{
+		{ClientID: agent.ID, Name: "root", Protocol: domain.ProtocolHTTPS, Domain: "shared.example.com", LocalHost: "localhost", LocalPort: 8080, Enabled: true},
+		{ClientID: agent.ID, Name: "path", Protocol: domain.ProtocolHTTPS, Domain: "shared.example.com", PathPrefix: "/media", LocalHost: "localhost", LocalPort: 8081, Enabled: true},
+		{ClientID: agent.ID, Name: "extra-port", Protocol: domain.ProtocolHTTPS, Domain: "shared.example.com", PublicPort: 8443, LocalHost: "localhost", LocalPort: 8082, Enabled: true},
+		{ClientID: agent.ID, Name: "plain", Protocol: domain.ProtocolHTTP, Domain: "shared.example.com", LocalHost: "localhost", LocalPort: 8083, Enabled: true},
+	}
+	for _, route := range routes {
+		if _, err := s.CreateRoute(ctx, route); err != nil {
+			t.Fatalf("create %q: %v", route.Name, err)
+		}
+	}
+	// The exact same endpoint must conflict.
+	_, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "duplicate", Protocol: domain.ProtocolHTTPS,
+		Domain: "shared.example.com", PathPrefix: "/media", LocalHost: "localhost", LocalPort: 9000, Enabled: true,
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate endpoint error=%v want conflict", err)
+	}
+}
+
+func TestPublicPortConflictsAcrossRouteClasses(t *testing.T) {
+	ctx := context.Background()
+	s, agent := enrolledStore(t, 31300, 31310)
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "tcp", Protocol: domain.ProtocolTCP, PublicPort: 45100,
+		LocalHost: "localhost", LocalPort: 8080, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Web route on a TCP-claimed port must be rejected.
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "web", Protocol: domain.ProtocolHTTPS, Domain: "conflict.example.com",
+		PublicPort: 45100, LocalHost: "localhost", LocalPort: 8081, Enabled: true,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("web-over-tcp port error=%v want conflict", err)
+	}
+	// UDP may not reuse the TCP port either (single stream index).
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "udp", Protocol: domain.ProtocolUDP, PublicPort: 45100,
+		LocalHost: "localhost", LocalPort: 8082, Enabled: true,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("udp-over-tcp port error=%v want conflict", err)
+	}
+	// Two web routes may share an extra port with the same scheme...
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "web-a", Protocol: domain.ProtocolHTTPS, Domain: "a.example.com",
+		PublicPort: 45200, LocalHost: "localhost", LocalPort: 8083, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "web-b", Protocol: domain.ProtocolHTTPS, Domain: "b.example.com",
+		PublicPort: 45200, LocalHost: "localhost", LocalPort: 8084, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// ...but not with mixed schemes.
+	if _, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "web-c", Protocol: domain.ProtocolHTTP, Domain: "c.example.com",
+		PublicPort: 45200, LocalHost: "localhost", LocalPort: 8085, Enabled: true,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mixed-scheme shared port error=%v want conflict", err)
+	}
+}
+
+func TestLegacyHTTPRoutesMigrateToHTTPS(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	s, agent := enrolledStoreAt(t, path, 31400, 31410)
+	route, err := s.CreateRoute(ctx, domain.Route{
+		ClientID: agent.ID, Name: "legacy", Protocol: domain.ProtocolHTTPS, Domain: "legacy.example.com",
+		LocalHost: "localhost", LocalPort: 8080, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rewrite the row and schema to the legacy shape: protocol http plus the
+	// old unique index, without the version-5 migration marker.
+	if _, err := s.db.ExecContext(ctx, `UPDATE routes SET protocol='http' WHERE id = ?`, route.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS routes_web_endpoint`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX routes_http_domain ON routes(domain) WHERE protocol = 'http'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path, Options{PortRangeStart: 31400, PortRangeEnd: 31410})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	migrated, err := reopened.GetRoute(ctx, route.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Protocol != domain.ProtocolHTTPS {
+		t.Fatalf("legacy protocol=%q want https", migrated.Protocol)
 	}
 }
 
@@ -237,8 +356,13 @@ func listenWithFreeSuccessor(t *testing.T) (net.Listener, int) {
 
 func enrolledStore(t *testing.T, start, end int) (*Store, domain.Agent) {
 	t.Helper()
+	return enrolledStoreAt(t, filepath.Join(t.TempDir(), "state.db"), start, end)
+}
+
+func enrolledStoreAt(t *testing.T, path string, start, end int) (*Store, domain.Agent) {
+	t.Helper()
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "state.db"), Options{PortRangeStart: start, PortRangeEnd: end})
+	s, err := Open(path, Options{PortRangeStart: start, PortRangeEnd: end})
 	if err != nil {
 		t.Fatal(err)
 	}

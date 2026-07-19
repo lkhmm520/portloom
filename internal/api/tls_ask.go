@@ -8,7 +8,7 @@ import (
 )
 
 type TLSAskRouteSource interface {
-	HTTPDomainEnabled(context.Context, string) (bool, error)
+	HTTPSDomainEnabled(context.Context, string) (bool, error)
 }
 
 type tlsAskHandler struct {
@@ -40,7 +40,7 @@ func (h *tlsAskHandler) allowTLSCertificate(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	enabled, err := h.routes.HTTPDomainEnabled(r.Context(), host)
+	enabled, err := h.routes.HTTPSDomainEnabled(r.Context(), host)
 	if err != nil {
 		internalError(w)
 		return

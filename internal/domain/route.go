@@ -11,9 +11,33 @@ import (
 type Protocol string
 
 const (
+	// ProtocolHTTP publishes a domain (and optional path prefix) over plain
+	// HTTP on the public HTTP edge port without requesting a certificate.
 	ProtocolHTTP Protocol = "http"
-	ProtocolTCP  Protocol = "tcp"
+	// ProtocolHTTPS publishes a domain (and optional path prefix) over the
+	// public HTTPS edge with an ACME certificate and HTTP-to-HTTPS redirect.
+	ProtocolHTTPS Protocol = "https"
+	ProtocolTCP   Protocol = "tcp"
+	ProtocolUDP   Protocol = "udp"
 )
+
+// IsWeb reports whether the protocol is routed by Host/path on the HTTP(S) edge.
+func (p Protocol) IsWeb() bool { return p == ProtocolHTTP || p == ProtocolHTTPS }
+
+// IsStream reports whether the protocol publishes a dedicated public port.
+func (p Protocol) IsStream() bool { return p == ProtocolTCP || p == ProtocolUDP }
+
+// DefaultPublicPort is the edge port used when a web route leaves PublicPort 0.
+func (p Protocol) DefaultPublicPort() int {
+	switch p {
+	case ProtocolHTTP:
+		return 80
+	case ProtocolHTTPS:
+		return 443
+	default:
+		return 0
+	}
+}
 
 type Route struct {
 	ID               string    `json:"id"`
@@ -21,6 +45,8 @@ type Route struct {
 	Name             string    `json:"name"`
 	Protocol         Protocol  `json:"protocol"`
 	Domain           string    `json:"domain,omitempty"`
+	PathPrefix       string    `json:"path_prefix,omitempty"`
+	StripPath        bool      `json:"strip_path,omitempty"`
 	LocalHost        string    `json:"local_host"`
 	LocalPort        int       `json:"local_port"`
 	RemotePort       int       `json:"remote_port"`
@@ -39,6 +65,23 @@ type Route struct {
 }
 
 const AgentHeartbeatFreshness = 90 * time.Second
+
+// EffectivePublicPort resolves the public port a web route is served on.
+func (r Route) EffectivePublicPort() int {
+	if r.Protocol.IsWeb() && r.PublicPort == 0 {
+		return r.Protocol.DefaultPublicPort()
+	}
+	return r.PublicPort
+}
+
+// MatchesPath reports whether a request path is covered by the route's path
+// prefix. An empty prefix matches every path.
+func (r Route) MatchesPath(path string) bool {
+	if r.PathPrefix == "" {
+		return true
+	}
+	return path == r.PathPrefix || strings.HasPrefix(path, r.PathPrefix+"/")
+}
 
 // PublicationReady reports whether a route may currently receive public traffic.
 func (r Route) PublicationReady() bool {
@@ -86,6 +129,28 @@ func NormalizeDNSHost(value string) (string, bool) {
 	return value, true
 }
 
+var pathPrefixRE = regexp.MustCompile(`^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$`)
+
+// NormalizePathPrefix canonicalizes a route path prefix. The empty string (or
+// "/") means the whole domain. Valid prefixes start with "/", contain no empty
+// or dot-dot segments, and are returned without a trailing slash.
+func NormalizePathPrefix(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return "", true
+	}
+	if !strings.HasPrefix(value, "/") || !pathPrefixRE.MatchString(value) {
+		return "", false
+	}
+	value = strings.TrimSuffix(value, "/")
+	for _, segment := range strings.Split(value[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	return value, true
+}
+
 // ValidHost reports whether value is an IP address or a syntactically valid DNS hostname.
 func ValidHost(value string) bool {
 	if net.ParseIP(value) != nil {
@@ -101,25 +166,44 @@ func (r *Route) Validate() error {
 	if r.Name == "" {
 		return errors.New("name is required")
 	}
-	if r.Protocol != ProtocolHTTP && r.Protocol != ProtocolTCP {
-		return errors.New("protocol must be http or tcp")
+	switch r.Protocol {
+	case ProtocolHTTP, ProtocolHTTPS, ProtocolTCP, ProtocolUDP:
+	default:
+		return errors.New("protocol must be http, https, tcp, or udp")
 	}
-	if r.Protocol == ProtocolHTTP {
+	if r.Protocol.IsWeb() {
 		normalizedDomain, valid := NormalizeDNSHost(r.Domain)
 		if !valid {
-			return errors.New("valid domain is required for HTTP route")
+			return errors.New("valid domain is required for HTTP/HTTPS route")
 		}
 		r.Domain = normalizedDomain
-		if r.PublicPort != 0 {
-			return errors.New("public port is only valid for TCP route")
+		prefix, valid := NormalizePathPrefix(r.PathPrefix)
+		if !valid {
+			return errors.New("path prefix must start with / and contain no empty or dot segments")
+		}
+		r.PathPrefix = prefix
+		if r.StripPath && r.PathPrefix == "" {
+			return errors.New("strip path requires a path prefix")
+		}
+		if r.PublicPort != 0 && (r.PublicPort < 1 || r.PublicPort > 65535) {
+			return errors.New("public port must be between 1 and 65535")
+		}
+		if r.PublicPort == r.Protocol.DefaultPublicPort() {
+			r.PublicPort = 0
 		}
 	} else {
 		r.Domain = NormalizeHost(r.Domain)
 		if r.Domain != "" {
-			return errors.New("domain is only valid for HTTP route")
+			return errors.New("domain is only valid for HTTP/HTTPS route")
+		}
+		if r.PathPrefix != "" {
+			return errors.New("path prefix is only valid for HTTP/HTTPS route")
+		}
+		if r.StripPath {
+			return errors.New("strip path is only valid for HTTP/HTTPS route")
 		}
 		if r.PublicPort < 1 || r.PublicPort > 65535 {
-			return errors.New("public port must be between 1 and 65535 for TCP route")
+			return errors.New("public port must be between 1 and 65535 for TCP/UDP route")
 		}
 	}
 	if !ValidHost(r.LocalHost) {
@@ -129,7 +213,11 @@ func (r *Route) Validate() error {
 		return errors.New("local port must be between 1 and 65535")
 	}
 	if r.TunnelGroup == "" {
-		r.TunnelGroup = "web"
+		if r.Protocol.IsStream() {
+			r.TunnelGroup = string(r.Protocol)
+		} else {
+			r.TunnelGroup = "web"
+		}
 	}
 	return nil
 }

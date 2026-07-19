@@ -274,8 +274,9 @@ func TestTLSCertificateAuthorizationAllowsOnlyConfiguredHTTPHosts(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, route := range []domain.Route{
-		{ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolHTTP, Domain: "app.example.com", LocalHost: "127.0.0.1", LocalPort: 8080, TunnelGroup: "web", Enabled: true},
-		{ClientID: agent.ID, Name: "off", Protocol: domain.ProtocolHTTP, Domain: "off.example.com", LocalHost: "127.0.0.1", LocalPort: 8081, TunnelGroup: "web", Enabled: false},
+		{ClientID: agent.ID, Name: "app", Protocol: domain.ProtocolHTTPS, Domain: "app.example.com", LocalHost: "127.0.0.1", LocalPort: 8080, TunnelGroup: "web", Enabled: true},
+		{ClientID: agent.ID, Name: "off", Protocol: domain.ProtocolHTTPS, Domain: "off.example.com", LocalHost: "127.0.0.1", LocalPort: 8081, TunnelGroup: "web", Enabled: false},
+		{ClientID: agent.ID, Name: "plain", Protocol: domain.ProtocolHTTP, Domain: "plain.example.com", LocalHost: "127.0.0.1", LocalPort: 8082, TunnelGroup: "web", Enabled: true},
 		{ClientID: agent.ID, Name: "tcp", Protocol: domain.ProtocolTCP, PublicPort: 24443, LocalHost: "127.0.0.1", LocalPort: 8443, TunnelGroup: "tcp", Enabled: true},
 	} {
 		if _, err := s.CreateRoute(context.Background(), route); err != nil {
@@ -289,8 +290,9 @@ func TestTLSCertificateAuthorizationAllowsOnlyConfiguredHTTPHosts(t *testing.T) 
 		want       int
 	}{
 		{"admin host", "/api/v1/tls/allow?domain=LOOM.example.com.&token=ask-secret", http.StatusOK},
-		{"enabled HTTP route", "/api/v1/tls/allow?domain=app.example.com&token=ask-secret", http.StatusOK},
+		{"enabled HTTPS route", "/api/v1/tls/allow?domain=app.example.com&token=ask-secret", http.StatusOK},
 		{"disabled route", "/api/v1/tls/allow?domain=off.example.com&token=ask-secret", http.StatusForbidden},
+		{"plain-HTTP route gets no certificate", "/api/v1/tls/allow?domain=plain.example.com&token=ask-secret", http.StatusForbidden},
 		{"unknown route", "/api/v1/tls/allow?domain=unknown.example.com&token=ask-secret", http.StatusForbidden},
 		{"wrong ask token", "/api/v1/tls/allow?domain=app.example.com&token=wrong", http.StatusUnauthorized},
 		{"empty domain", "/api/v1/tls/allow?domain=&token=ask-secret", http.StatusBadRequest},

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/gateway"
 )
 
 type routeSource struct {
@@ -16,17 +19,40 @@ type routeSource struct {
 	err     error
 }
 
-func (s routeSource) HTTPDomainEnabled(_ context.Context, host string) (bool, error) {
+func (s routeSource) HTTPSDomainEnabled(_ context.Context, host string) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}
 	return s.enabled[host], nil
 }
 
+type fakeRouteList struct {
+	routes []domain.Route
+	err    error
+}
+
+func (s fakeRouteList) ListRoutes(context.Context) ([]domain.Route, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.routes, nil
+}
+
+func readyRoute(protocol domain.Protocol, host, prefix string) domain.Route {
+	return domain.Route{
+		ID: "route-" + host + prefix, ClientID: "client-1", Name: host,
+		Protocol: protocol, Domain: host, PathPrefix: prefix,
+		LocalHost: "127.0.0.1", LocalPort: 65534, RemotePort: 1,
+		Enabled: true, TunnelStatus: "up", DesiredRevision: 1, ObservedRevision: 1,
+		AgentLastSeenAt: time.Now().UTC(),
+	}
+}
+
+func emptyGateway() *gateway.Handler { return gateway.New(fakeRouteList{}) }
+
 func TestRouterSendsManagementHostToControlAndRouteHostToGateway(t *testing.T) {
 	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	gateway := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
-	handler, err := NewRouter("console.example.com", control, gateway)
+	handler, err := NewRouter("console.example.com", control, emptyGateway(), ":443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +63,8 @@ func TestRouterSendsManagementHostToControlAndRouteHostToGateway(t *testing.T) {
 	}{
 		{host: "console.example.com", want: http.StatusNoContent},
 		{host: "CONSOLE.EXAMPLE.COM:443", want: http.StatusNoContent},
-		{host: "app.example.com", want: http.StatusAccepted},
+		// Unknown route hosts land in the gateway, which returns 404.
+		{host: "app.example.com", want: http.StatusNotFound},
 	} {
 		t.Run(test.host, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "https://"+test.host+"/", nil)
@@ -48,6 +75,30 @@ func TestRouterSendsManagementHostToControlAndRouteHostToGateway(t *testing.T) {
 				t.Fatalf("status=%d want=%d", res.Code, test.want)
 			}
 		})
+	}
+}
+
+func TestRouterPathPrefixRouteMayShareManagementDomain(t *testing.T) {
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	route := readyRoute(domain.ProtocolHTTPS, "console.example.com", "/app")
+	handler, err := NewRouter("console.example.com", control, gateway.New(fakeRouteList{routes: []domain.Route{route}}), ":443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The path-prefix route matches and the gateway attempts to proxy; with no
+	// live tunnel the upstream dial fails with 502, proving dispatch happened.
+	req := httptest.NewRequest(http.MethodGet, "https://console.example.com/app/library", nil)
+	res := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusBadGateway {
+		t.Fatalf("path-prefix status=%d want=502", res.Code)
+	}
+	// Everything else on the management domain still reaches control.
+	req = httptest.NewRequest(http.MethodGet, "https://console.example.com/api/v1/system", nil)
+	res = &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("management status=%d want=204", res.Code)
 	}
 }
 
@@ -83,7 +134,7 @@ func TestRouterBoundsPublicManagementRequests(t *testing.T) {
 		}
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 	})
-	router, err := NewRouter("console.example.com", control, http.NotFoundHandler())
+	router, err := NewRouter("console.example.com", control, emptyGateway(), ":443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +148,7 @@ func TestRouterBoundsPublicManagementRequests(t *testing.T) {
 
 func TestRouterRejectsDeclaredOversizedManagementBodyBeforeControl(t *testing.T) {
 	called := false
-	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), http.NotFoundHandler())
+	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), emptyGateway(), ":443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +164,7 @@ func TestRouterRejectsDeclaredOversizedManagementBodyBeforeControl(t *testing.T)
 func TestRouterManagementDeadlinesWorkOnHTTP1AndHTTP2(t *testing.T) {
 	router, err := NewRouter("console.example.com", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-	}), http.NotFoundHandler())
+	}), emptyGateway(), ":443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +196,7 @@ func TestRouterManagementDeadlinesWorkOnHTTP1AndHTTP2(t *testing.T) {
 
 func TestRouterFailsClosedWithoutManagementDeadlineSupport(t *testing.T) {
 	called := false
-	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), http.NotFoundHandler())
+	router, err := NewRouter("console.example.com", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), emptyGateway(), ":443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,8 +208,13 @@ func TestRouterFailsClosedWithoutManagementDeadlineSupport(t *testing.T) {
 	}
 }
 
-func TestHTTPRedirectOnlyAllowsManagementAndEnabledRouteHosts(t *testing.T) {
-	handler, err := NewHTTPRedirectHandler("console.example.com", ":443", routeSource{enabled: map[string]bool{"app.example.com": true}})
+func redirectingGateway(routes ...domain.Route) *gateway.Handler {
+	return gateway.New(fakeRouteList{routes: routes}, gateway.WithHTTPSRedirect(443))
+}
+
+func TestHTTPHandlerRedirectsManagementAndHTTPSOnlyHosts(t *testing.T) {
+	httpsRoute := readyRoute(domain.ProtocolHTTPS, "app.example.com", "")
+	handler, err := NewHTTPHandler("console.example.com", ":80", ":443", redirectingGateway(httpsRoute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +241,24 @@ func TestHTTPRedirectOnlyAllowsManagementAndEnabledRouteHosts(t *testing.T) {
 	}
 }
 
-func TestHTTPRedirectUsesConfiguredHTTPSPort(t *testing.T) {
-	handler, err := NewHTTPRedirectHandler("console.example.com", ":8443", routeSource{})
+func TestHTTPHandlerServesPlainHTTPRouteWithoutRedirect(t *testing.T) {
+	plain := readyRoute(domain.ProtocolHTTP, "plain.example.com", "")
+	handler, err := NewHTTPHandler("console.example.com", ":80", ":443", redirectingGateway(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://plain.example.com/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	// The gateway attempts to proxy (no live tunnel in tests → 502): plain
+	// HTTP is served directly rather than redirected.
+	if res.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=502", res.Code)
+	}
+}
+
+func TestHTTPHandlerUsesConfiguredHTTPSPortForManagementRedirect(t *testing.T) {
+	handler, err := NewHTTPHandler("console.example.com", ":8080", ":8443", emptyGateway())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,8 +273,9 @@ func TestHTTPRedirectUsesConfiguredHTTPSPort(t *testing.T) {
 	}
 }
 
-func TestHTTPRedirectReturnsServiceUnavailableWhenRouteLookupFails(t *testing.T) {
-	handler, err := NewHTTPRedirectHandler("console.example.com", ":443", routeSource{err: errors.New("database unavailable")})
+func TestHTTPHandlerReturnsServiceUnavailableWhenRouteLookupFails(t *testing.T) {
+	failing := gateway.New(fakeRouteList{err: errors.New("database unavailable")}, gateway.WithHTTPSRedirect(443))
+	handler, err := NewHTTPHandler("console.example.com", ":80", ":443", failing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +308,7 @@ func TestCertificateManagerHostPolicyRejectsMalformedCandidate(t *testing.T) {
 	}
 }
 
-func TestCertificateManagerOnlyAuthorizesManagementAndEnabledRouteHosts(t *testing.T) {
+func TestCertificateManagerOnlyAuthorizesManagementAndEnabledHTTPSHosts(t *testing.T) {
 	manager, err := NewCertificateManager(t.TempDir(), "console.example.com", routeSource{enabled: map[string]bool{"app.example.com": true}})
 	if err != nil {
 		t.Fatal(err)

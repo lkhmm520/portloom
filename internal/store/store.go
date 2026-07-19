@@ -101,10 +101,6 @@ CREATE TABLE IF NOT EXISTS routes (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS routes_http_domain
-  ON routes(domain) WHERE protocol = 'http';
-CREATE UNIQUE INDEX IF NOT EXISTS routes_public_port
-  ON routes(public_port) WHERE public_port > 0;
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
@@ -118,6 +114,83 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime
 	}
 	if err := s.ensureEnrollmentClaims(ctx); err != nil {
 		return err
+	}
+	if err := s.ensureWebRouteSchema(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureWebRouteSchema upgrades the routes table for split HTTP/HTTPS
+// protocols, path-prefix routing, and shared web ports. Legacy databases used
+// protocol 'http' for routes that were actually published over HTTPS with a
+// redirect, so those rows are rewritten to 'https' exactly once.
+func (s *Store) ensureWebRouteSchema(ctx context.Context) error {
+	var migrated bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)`).Scan(&migrated); err != nil {
+		return fmt.Errorf("inspect web route migration: %w", err)
+	}
+	if migrated {
+		return nil
+	}
+	columns := map[string]bool{}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(routes)`)
+	if err != nil {
+		return fmt.Errorf("inspect route schema: %w", err)
+	}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect route column: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate route schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close route schema rows: %w", err)
+	}
+	if !columns["path_prefix"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE routes ADD COLUMN path_prefix TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add route path prefix: %w", err)
+		}
+	}
+	if !columns["strip_path"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE routes ADD COLUMN strip_path INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add route strip path: %w", err)
+		}
+	}
+	var legacyIndex bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'routes_http_domain')`).Scan(&legacyIndex); err != nil {
+		return fmt.Errorf("inspect legacy route index: %w", err)
+	}
+	if legacyIndex {
+		if _, err := s.db.ExecContext(ctx, `UPDATE routes SET protocol = 'https' WHERE protocol = 'http'`); err != nil {
+			return fmt.Errorf("rewrite legacy HTTP routes: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS routes_http_domain`); err != nil {
+			return fmt.Errorf("drop legacy route domain index: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS routes_public_port`); err != nil {
+		return fmt.Errorf("drop legacy route port index: %w", err)
+	}
+	const indexes = `
+CREATE UNIQUE INDEX IF NOT EXISTS routes_web_endpoint
+  ON routes(protocol, domain, public_port, path_prefix) WHERE protocol IN ('http', 'https');
+CREATE UNIQUE INDEX IF NOT EXISTS routes_stream_port
+  ON routes(public_port) WHERE public_port > 0 AND protocol IN ('tcp', 'udp');
+`
+	if _, err := s.db.ExecContext(ctx, indexes); err != nil {
+		return fmt.Errorf("create route endpoint indexes: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, ?)`, formatTime(time.Now().UTC())); err != nil {
+		return fmt.Errorf("record web route migration: %w", err)
 	}
 	return nil
 }

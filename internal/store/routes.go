@@ -16,16 +16,66 @@ func (s *Store) GetRoute(ctx context.Context, id string) (domain.Route, error) {
 	return getRoute(ctx, s.db, id)
 }
 
-func (s *Store) HTTPDomainEnabled(ctx context.Context, domainName string) (bool, error) {
-	var enabled bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
-		SELECT 1 FROM routes INDEXED BY routes_http_domain
+// HTTPSDomainEnabled reports whether an enabled HTTPS route exists for the
+// domain. It authorizes ACME certificates and HTTP-to-HTTPS redirects.
+func (s *Store) HTTPSDomainEnabled(ctx context.Context, domainName string) (bool, error) {
+	return s.webDomainEnabled(ctx, "https", domainName)
+}
+
+// PlainHTTPDomainEnabled reports whether an enabled plain-HTTP route exists
+// for the domain.
+func (s *Store) PlainHTTPDomainEnabled(ctx context.Context, domainName string) (bool, error) {
+	return s.webDomainEnabled(ctx, "http", domainName)
+}
+
+func (s *Store) webDomainEnabled(ctx context.Context, protocol, domainName string) (bool, error) {
+	// Inline the protocol literal so the planner can use the partial
+	// routes_web_endpoint index.
+	query := `SELECT EXISTS(
+		SELECT 1 FROM routes
+		WHERE protocol = 'https' AND domain = ? AND enabled = 1
+	)`
+	if protocol == "http" {
+		query = `SELECT EXISTS(
+		SELECT 1 FROM routes
 		WHERE protocol = 'http' AND domain = ? AND enabled = 1
-	)`, domainName).Scan(&enabled)
+	)`
+	}
+	var enabled bool
+	err := s.db.QueryRowContext(ctx, query, domainName).Scan(&enabled)
 	if err != nil {
-		return false, fmt.Errorf("check enabled HTTP domain: %w", err)
+		return false, fmt.Errorf("check enabled %s domain: %w", protocol, err)
 	}
 	return enabled, nil
+}
+
+// ensurePublicPortAvailable rejects a stream route that reuses a web route's
+// extra port and vice versa. Same-class conflicts are covered by the partial
+// unique indexes; effective default web ports (80/443) are stored as 0.
+func ensurePublicPortAvailable(ctx context.Context, tx *sql.Tx, route domain.Route, excludeID string) error {
+	if route.PublicPort == 0 {
+		return nil
+	}
+	var query string
+	var args []any
+	if route.Protocol.IsStream() {
+		query = `SELECT EXISTS(SELECT 1 FROM routes WHERE public_port = ? AND protocol IN ('http', 'https') AND id != ?)`
+		args = []any{route.PublicPort, excludeID}
+	} else {
+		// A shared web port must keep a single scheme, and never collide
+		// with a dedicated TCP/UDP port.
+		query = `SELECT EXISTS(SELECT 1 FROM routes WHERE public_port = ?
+			AND (protocol IN ('tcp', 'udp') OR (protocol IN ('http', 'https') AND protocol != ?)) AND id != ?)`
+		args = []any{route.PublicPort, string(route.Protocol), excludeID}
+	}
+	var conflict bool
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&conflict); err != nil {
+		return fmt.Errorf("check public port conflict: %w", err)
+	}
+	if conflict {
+		return fmt.Errorf("public port %d: %w", route.PublicPort, ErrConflict)
+	}
+	return nil
 }
 
 func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
@@ -69,6 +119,9 @@ func (s *Store) CreateRoute(ctx context.Context, route domain.Route) (domain.Rou
 	if err != nil {
 		return domain.Route{}, err
 	}
+	if err := ensurePublicPortAvailable(ctx, tx, route, ""); err != nil {
+		return domain.Route{}, err
+	}
 	now := time.Now().UTC()
 	routeID, err := randomID()
 	if err != nil {
@@ -85,11 +138,11 @@ func (s *Store) CreateRoute(ctx context.Context, route domain.Route) (domain.Rou
 	route.UpdatedAt = now
 
 	_, err = tx.ExecContext(ctx, `INSERT INTO routes
-		(id, client_id, name, protocol, domain, local_host, local_port, remote_port,
+		(id, client_id, name, protocol, domain, path_prefix, strip_path, local_host, local_port, remote_port,
 		 public_port, tunnel_group, enabled, desired_revision, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		route.ID, route.ClientID, route.Name, route.Protocol, route.Domain, route.LocalHost,
-		route.LocalPort, route.RemotePort, route.PublicPort, route.TunnelGroup, route.Enabled,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		route.ID, route.ClientID, route.Name, route.Protocol, route.Domain, route.PathPrefix, route.StripPath,
+		route.LocalHost, route.LocalPort, route.RemotePort, route.PublicPort, route.TunnelGroup, route.Enabled,
 		route.DesiredRevision, formatTime(now), formatTime(now))
 	if err != nil {
 		return domain.Route{}, mapConstraintError("create route", err)
@@ -129,9 +182,12 @@ func (s *Store) UpdateRoute(ctx context.Context, id string, update domain.Route)
 	}
 	update.DesiredRevision = revision
 	update.UpdatedAt = time.Now().UTC()
-	_, err = tx.ExecContext(ctx, `UPDATE routes SET name=?, protocol=?, domain=?, local_host=?,
+	if err := ensurePublicPortAvailable(ctx, tx, update, id); err != nil {
+		return domain.Route{}, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE routes SET name=?, protocol=?, domain=?, path_prefix=?, strip_path=?, local_host=?,
 		local_port=?, public_port=?, tunnel_group=?, enabled=?, desired_revision=?, updated_at=? WHERE id=?`,
-		update.Name, update.Protocol, update.Domain, update.LocalHost, update.LocalPort,
+		update.Name, update.Protocol, update.Domain, update.PathPrefix, update.StripPath, update.LocalHost, update.LocalPort,
 		update.PublicPort, update.TunnelGroup, update.Enabled, revision, formatTime(update.UpdatedAt), id)
 	if err != nil {
 		return domain.Route{}, mapConstraintError("update route", err)
@@ -294,7 +350,7 @@ func bumpDesiredRevision(ctx context.Context, tx *sql.Tx, agentID string) (int64
 	return revision, err
 }
 
-const routeSelect = `SELECT id, client_id, name, protocol, domain, local_host, local_port,
+const routeSelect = `SELECT id, client_id, name, protocol, domain, path_prefix, strip_path, local_host, local_port,
 	remote_port, public_port, tunnel_group, enabled, desired_revision, observed_revision,
 	local_status, tunnel_status, last_error,
 	(SELECT last_seen_at FROM agents WHERE id = routes.client_id), created_at, updated_at FROM routes`
@@ -319,6 +375,7 @@ func scanRoute(scanner rowScanner) (domain.Route, error) {
 	var agentLastSeen sql.NullString
 	var createdAt, updatedAt string
 	err := scanner.Scan(&route.ID, &route.ClientID, &route.Name, &protocol, &route.Domain,
+		&route.PathPrefix, &route.StripPath,
 		&route.LocalHost, &route.LocalPort, &route.RemotePort, &route.PublicPort,
 		&route.TunnelGroup, &route.Enabled, &route.DesiredRevision, &route.ObservedRevision,
 		&route.LocalStatus, &route.TunnelStatus, &route.LastError, &agentLastSeen, &createdAt, &updatedAt)

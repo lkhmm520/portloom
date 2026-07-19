@@ -5,17 +5,34 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/lkhmm520/portloom/internal/sysinfo"
 )
 
 type Syncer struct {
 	mu               sync.Mutex
 	client           ServerClient
 	reconciler       StateReconciler
+	stats            func() sysinfo.Stats
 	observedRevision int64
 }
 
-func NewSyncer(client ServerClient, reconciler StateReconciler) *Syncer {
-	return &Syncer{client: client, reconciler: reconciler}
+type SyncerOption func(*Syncer)
+
+// WithSystemStats attaches a resource sampler whose output is reported to the
+// server with every observed state.
+func WithSystemStats(stats func() sysinfo.Stats) SyncerOption {
+	return func(syncer *Syncer) { syncer.stats = stats }
+}
+
+func NewSyncer(client ServerClient, reconciler StateReconciler, options ...SyncerOption) *Syncer {
+	syncer := &Syncer{client: client, reconciler: reconciler}
+	for _, option := range options {
+		if option != nil {
+			option(syncer)
+		}
+	}
+	return syncer
 }
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	s.mu.Lock()
@@ -25,6 +42,10 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("fetch desired state: %w", err)
 	}
 	observed := s.reconciler.Reconcile(ctx, desired)
+	if s.stats != nil {
+		stats := s.stats()
+		observed.System = &stats
+	}
 	if err := s.client.ReportObserved(ctx, observed); err != nil {
 		return fmt.Errorf("report observed state: %w", err)
 	}

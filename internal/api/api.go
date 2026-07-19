@@ -14,6 +14,7 @@ import (
 	"github.com/lkhmm520/portloom/internal/authorizedkeys"
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/store"
+	"github.com/lkhmm520/portloom/internal/sysinfo"
 )
 
 const (
@@ -33,9 +34,15 @@ type Config struct {
 	PublicHost           string
 	TLSAskToken          string
 	TCPEnabled           bool
+	UDPEnabled           bool
+	WebPortsEnabled      bool
 	TCPBindHost          string
 	RoutePublicStatus    func(domain.Route) string
+	RouteWebPortStatus   func(int) string
 	TCPPortReserved      func(int) bool
+	Metrics              MetricsSource
+	ServerStats          ServerStatsFunc
+	AgentSystemInfo      *AgentSystemStore
 }
 
 type server struct {
@@ -56,6 +63,7 @@ func New(state *store.Store, config Config) http.Handler {
 	mux := http.NewServeMux()
 	// Canonical UI endpoints.
 	mux.HandleFunc("GET /api/v1/system", s.admin(s.systemInfo))
+	mux.HandleFunc("GET /api/v1/metrics", s.admin(s.metrics))
 	mux.HandleFunc("GET /api/v1/clients", s.admin(s.listClients))
 	mux.HandleFunc("GET /api/v1/enrollment-tokens", s.admin(s.listEnrollmentTokens))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.admin(s.issueEnrollmentToken))
@@ -129,7 +137,8 @@ func (s *server) systemInfo(w http.ResponseWriter, _ *http.Request) {
 	managed := strings.TrimSpace(s.config.AuthorizedKeysPath) != "" && strings.TrimSpace(s.config.SSHHostPublicKeyPath) != ""
 	response := map[string]any{
 		"managed_ssh": managed, "version": s.config.ServerVersion,
-		"tcp_edge": s.config.TCPEnabled,
+		"tcp_edge": s.config.TCPEnabled, "udp_edge": s.config.UDPEnabled,
+		"web_port_edge": s.config.WebPortsEnabled,
 	}
 	if s.config.TCPEnabled {
 		response["tcp_bind_host"] = s.config.TCPBindHost
@@ -233,7 +242,7 @@ func (s *server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "reserved_domain")
 		return
 	}
-	if !s.validateTCPRoute(w, route) {
+	if !s.validateRoutePublication(w, route) {
 		return
 	}
 	created, err := s.store.CreateRoute(r.Context(), route)
@@ -262,7 +271,7 @@ func (s *server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "reserved_domain")
 		return
 	}
-	if !s.validateTCPRoute(w, route) {
+	if !s.validateRoutePublication(w, route) {
 		return
 	}
 	updated, err := s.store.UpdateRoute(r.Context(), r.PathValue("id"), route)
@@ -273,23 +282,69 @@ func (s *server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.decorateRoute(updated))
 }
 
-func (s *server) routeUsesReservedDomain(route domain.Route) bool {
-	return route.Protocol == domain.ProtocolHTTP &&
-		domain.NormalizeHost(route.Domain) != "" &&
-		domain.NormalizeHost(route.Domain) == domain.NormalizeHost(s.config.PublicHost)
-}
+// reservedManagementPrefixes are the control-plane paths that a path-prefix
+// route on the management domain must never shadow.
+var reservedManagementPrefixes = []string{"/api", "/assets", "/healthz"}
 
-func (s *server) validateTCPRoute(w http.ResponseWriter, route domain.Route) bool {
-	if route.Protocol != domain.ProtocolTCP {
+// routeUsesReservedDomain rejects web routes that would shadow the management
+// console. Path-prefix routes may share the management domain as long as they
+// keep HTTPS on the default port and stay clear of control-plane paths.
+func (s *server) routeUsesReservedDomain(route domain.Route) bool {
+	if !route.Protocol.IsWeb() || s.config.PublicHost == "" {
+		return false
+	}
+	if domain.NormalizeHost(route.Domain) != domain.NormalizeHost(s.config.PublicHost) {
+		return false
+	}
+	prefix, valid := domain.NormalizePathPrefix(route.PathPrefix)
+	if !valid || prefix == "" {
 		return true
 	}
-	if !s.config.TCPEnabled {
-		writeError(w, http.StatusConflict, "tcp_edge_disabled")
-		return false
+	if route.Protocol != domain.ProtocolHTTPS {
+		return true
 	}
-	if s.config.TCPPortReserved != nil && s.config.TCPPortReserved(route.PublicPort) {
-		writeError(w, http.StatusConflict, "reserved_tcp_port")
-		return false
+	if route.PublicPort != 0 && route.PublicPort != 443 {
+		return true
+	}
+	for _, reserved := range reservedManagementPrefixes {
+		if prefix == reserved || strings.HasPrefix(prefix, reserved+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) validateRoutePublication(w http.ResponseWriter, route domain.Route) bool {
+	if route.Protocol.IsStream() {
+		if route.Protocol == domain.ProtocolTCP && !s.config.TCPEnabled {
+			writeError(w, http.StatusConflict, "tcp_edge_disabled")
+			return false
+		}
+		if route.Protocol == domain.ProtocolUDP && !s.config.UDPEnabled {
+			writeError(w, http.StatusConflict, "udp_edge_disabled")
+			return false
+		}
+		if s.config.TCPPortReserved != nil && s.config.TCPPortReserved(route.PublicPort) {
+			writeError(w, http.StatusConflict, "reserved_tcp_port")
+			return false
+		}
+		return true
+	}
+	if route.Protocol.IsWeb() {
+		port := route.PublicPort
+		if port == route.Protocol.DefaultPublicPort() {
+			port = 0
+		}
+		if port != 0 {
+			if !s.config.WebPortsEnabled {
+				writeError(w, http.StatusConflict, "web_port_edge_disabled")
+				return false
+			}
+			if s.config.TCPPortReserved != nil && s.config.TCPPortReserved(port) {
+				writeError(w, http.StatusConflict, "reserved_tcp_port")
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -299,9 +354,13 @@ func (s *server) decorateRoute(route domain.Route) domain.Route {
 		route.PublicStatus = "disabled"
 		return route
 	}
-	if route.Protocol == domain.ProtocolTCP {
-		if !s.config.TCPEnabled {
-			route.PublicStatus = "tcp_edge_disabled"
+	if route.Protocol.IsStream() {
+		enabled := s.config.TCPEnabled
+		if route.Protocol == domain.ProtocolUDP {
+			enabled = s.config.UDPEnabled
+		}
+		if !enabled {
+			route.PublicStatus = string(route.Protocol) + "_edge_disabled"
 		} else if s.config.RoutePublicStatus != nil {
 			route.PublicStatus = s.config.RoutePublicStatus(route)
 		} else {
@@ -309,11 +368,15 @@ func (s *server) decorateRoute(route domain.Route) domain.Route {
 		}
 		return route
 	}
-	if route.PublicationReady() {
-		route.PublicStatus = "published"
-	} else {
+	if !route.PublicationReady() {
 		route.PublicStatus = "waiting_agent"
+		return route
 	}
+	if route.PublicPort != 0 && s.config.RouteWebPortStatus != nil {
+		route.PublicStatus = s.config.RouteWebPortStatus(route.PublicPort)
+		return route
+	}
+	route.PublicStatus = "published"
 	return route
 }
 
@@ -406,6 +469,7 @@ func (s *server) heartbeatAgent(w http.ResponseWriter, r *http.Request, agent do
 	var request struct {
 		ObservedRevision int64                     `json:"observed_revision"`
 		Routes           []domain.RouteObservation `json:"routes"`
+		System           *sysinfo.Stats            `json:"system"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		return
@@ -413,6 +477,9 @@ func (s *server) heartbeatAgent(w http.ResponseWriter, r *http.Request, agent do
 	if err := s.store.Heartbeat(r.Context(), agent.ID, request.ObservedRevision, request.Routes); err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if request.System != nil && s.config.AgentSystemInfo != nil {
+		s.config.AgentSystemInfo.Record(agent.ID, *request.System)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -426,9 +493,13 @@ func (s *server) observedAgent(w http.ResponseWriter, r *http.Request, agent dom
 			TunnelStatus string `json:"tunnel_status"`
 			Error        string `json:"error"`
 		} `json:"routes"`
+		System *sysinfo.Stats `json:"system"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		return
+	}
+	if request.System != nil && s.config.AgentSystemInfo != nil {
+		s.config.AgentSystemInfo.Record(agent.ID, *request.System)
 	}
 	observations := make([]domain.RouteObservation, 0, len(request.Routes))
 	for _, route := range request.Routes {

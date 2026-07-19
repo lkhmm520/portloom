@@ -16,12 +16,16 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/acme/autocert"
+
 	"github.com/lkhmm520/portloom/internal/api"
 	"github.com/lkhmm520/portloom/internal/authorizedkeys"
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/edge"
 	"github.com/lkhmm520/portloom/internal/gateway"
+	"github.com/lkhmm520/portloom/internal/metrics"
 	"github.com/lkhmm520/portloom/internal/store"
+	"github.com/lkhmm520/portloom/internal/sysinfo"
 	"github.com/lkhmm520/portloom/internal/tcpedge"
 )
 
@@ -152,9 +156,16 @@ func loadConfig(getenv envLookup) (config, error) {
 	if cfg.ManagedSSHPort < 1 || cfg.ManagedSSHPort > 65535 {
 		return config{}, errors.New("invalid managed SSH port")
 	}
-	if cfg.TCPBindHost != "" {
+	// The stream edge (TCP/UDP publication) is enabled by default. Set
+	// TM_TCP_EDGE_BIND_HOST=off to opt out.
+	switch cfg.TCPBindHost {
+	case "":
+		cfg.TCPBindHost = "0.0.0.0"
+	case "off", "disabled", "none":
+		cfg.TCPBindHost = ""
+	default:
 		if net.ParseIP(cfg.TCPBindHost) == nil {
-			return config{}, errors.New("TM_TCP_EDGE_BIND_HOST must be a literal IPv4 or IPv6 address")
+			return config{}, errors.New("TM_TCP_EDGE_BIND_HOST must be a literal IP address or 'off'")
 		}
 	}
 	if cfg.PortRangeStart < 1024 || cfg.PortRangeEnd > 65535 || cfg.PortRangeStart > cfg.PortRangeEnd {
@@ -244,65 +255,102 @@ func run(ctx context.Context, getenv envLookup) error {
 		}
 	}
 
+	trafficMetrics := metrics.New()
+	serverStats := sysinfo.NewSampler()
+	agentSystemInfo := api.NewAgentSystemStore()
+
 	var tcpManager *tcpedge.Manager
 	if cfg.TCPBindHost != "" {
-		tcpOptions := []tcpedge.Option{tcpedge.WithBindHost(cfg.TCPBindHost)}
+		tcpOptions := []tcpedge.Option{
+			tcpedge.WithBindHost(cfg.TCPBindHost),
+			tcpedge.WithTrafficObserver(trafficMetrics),
+		}
 		if cfg.ManagedSSHIsolated {
 			tcpOptions = append(tcpOptions, tcpedge.WithIsolatedAgentBindings())
 		}
 		tcpManager = tcpedge.New(state, tcpOptions...)
+	}
+	gatewayOptions := []gateway.Option{gateway.WithTrafficObserver(trafficMetrics)}
+	if cfg.ManagedSSHIsolated {
+		gatewayOptions = append(gatewayOptions, gateway.WithIsolatedAgentBindings())
+	}
+	if cfg.EdgeHTTPSAddr != "" {
+		if _, httpsPort, err := net.SplitHostPort(cfg.EdgeHTTPSAddr); err == nil {
+			if port, err := strconv.Atoi(httpsPort); err == nil {
+				gatewayOptions = append(gatewayOptions, gateway.WithHTTPSRedirect(port))
+			}
+		}
+	}
+	gatewayHandler := gateway.New(state, gatewayOptions...)
+
+	var portsManager *edge.PortsManager
+	var edgeCertificates *autocert.Manager
+	var edgeTLSConfig *tls.Config
+	if cfg.EdgeHTTPSAddr != "" {
+		if err := os.MkdirAll(cfg.TLSCacheDir, 0o700); err != nil {
+			return fmt.Errorf("create certificate cache: %w", err)
+		}
+		edgeCertificates, err = edge.NewCertificateManager(cfg.TLSCacheDir, cfg.PublicHost, state)
+		if err != nil {
+			return fmt.Errorf("configure native edge certificates: %w", err)
+		}
+		edgeCertificates.Email = cfg.ACMEEmail
+		edgeTLSConfig = edgeCertificates.TLSConfig()
+		edgeTLSConfig.MinVersion = tls.VersionTLS12
 	}
 	apiConfig := api.Config{
 		AdminToken: cfg.AdminToken, EnrollmentTTL: cfg.EnrollmentTTL, AuthorizedKeysPath: cfg.AuthorizedKeysPath,
 		SSHHostPublicKeyPath: cfg.SSHHostPublicKeyPath, ManagedSSHPort: cfg.ManagedSSHPort,
 		ManagedSSHIsolated: cfg.ManagedSSHIsolated, ServerVersion: version,
 		PublicHost: cfg.PublicHost, TLSAskToken: cfg.TLSAskToken,
-		TCPEnabled: tcpManager != nil, TCPBindHost: cfg.TCPBindHost,
+		TCPEnabled: tcpManager != nil, UDPEnabled: tcpManager != nil, TCPBindHost: cfg.TCPBindHost,
 		TCPPortReserved: func(port int) bool { return tcpPortReserved(cfg, port) },
+		Metrics:         trafficMetrics, ServerStats: serverStats.Sample, AgentSystemInfo: agentSystemInfo,
 	}
 	if tcpManager != nil {
 		apiConfig.RoutePublicStatus = tcpManager.PublicStatus
 	}
-	controlHandler := newMainHandler(api.New(state, apiConfig), cfg.WebDir)
-	control := newControlServer(cfg.ListenAddr, controlHandler)
-	gatewayOptions := []gateway.Option{}
-	if cfg.ManagedSSHIsolated {
-		gatewayOptions = append(gatewayOptions, gateway.WithIsolatedAgentBindings())
-	}
-	gatewayHandler := gateway.New(state, gatewayOptions...)
-	data := newEdgeServer(cfg.GatewayAddr, gatewayHandler, nil)
+
 	type serverSpec struct {
 		name   string
 		server *http.Server
 		tls    bool
 	}
-	servers := []serverSpec{{name: "control", server: control}, {name: "gateway", server: data}}
+	var servers []serverSpec
+	var edgeServers []serverSpec
+	if cfg.EdgeHTTPSAddr != "" {
+		bindHost, _, err := net.SplitHostPort(cfg.EdgeHTTPAddr)
+		if err != nil {
+			return fmt.Errorf("parse edge HTTP address: %w", err)
+		}
+		portsManager, err = edge.NewPortsManager(state, gatewayHandler, edgeTLSConfig, edge.WithPortsBindHost(bindHost))
+		if err != nil {
+			return fmt.Errorf("configure web port edge: %w", err)
+		}
+		apiConfig.WebPortsEnabled = true
+		apiConfig.RouteWebPortStatus = portsManager.PortStatus
+	}
+	controlHandler := newMainHandler(api.New(state, apiConfig), cfg.WebDir)
+	control := newControlServer(cfg.ListenAddr, controlHandler)
+	data := newEdgeServer(cfg.GatewayAddr, gatewayHandler, nil)
+	servers = []serverSpec{{name: "control", server: control}, {name: "gateway", server: data}}
 	if cfg.TLSAskToken != "" {
 		servers = append(servers, serverSpec{name: "TLS ask", server: newControlServer(cfg.TLSAskAddr, api.NewTLSAskHandler(state, apiConfig))})
 	}
 	if cfg.EdgeHTTPSAddr != "" {
-		if err := os.MkdirAll(cfg.TLSCacheDir, 0o700); err != nil {
-			return fmt.Errorf("create certificate cache: %w", err)
-		}
-		certificates, err := edge.NewCertificateManager(cfg.TLSCacheDir, cfg.PublicHost, state)
-		if err != nil {
-			return fmt.Errorf("configure native edge certificates: %w", err)
-		}
-		certificates.Email = cfg.ACMEEmail
-		router, err := edge.NewRouter(cfg.PublicHost, controlHandler, gatewayHandler)
+		router, err := edge.NewRouter(cfg.PublicHost, controlHandler, gatewayHandler, cfg.EdgeHTTPSAddr)
 		if err != nil {
 			return fmt.Errorf("configure native edge router: %w", err)
 		}
-		redirect, err := edge.NewHTTPRedirectHandler(cfg.PublicHost, cfg.EdgeHTTPSAddr, state)
+		httpHandler, err := edge.NewHTTPHandler(cfg.PublicHost, cfg.EdgeHTTPAddr, cfg.EdgeHTTPSAddr, gatewayHandler)
 		if err != nil {
-			return fmt.Errorf("configure native edge redirect: %w", err)
+			return fmt.Errorf("configure native edge HTTP handler: %w", err)
 		}
-		tlsConfig := certificates.TLSConfig()
-		tlsConfig.MinVersion = tls.VersionTLS12
-		servers = append(servers,
-			serverSpec{name: "public HTTP edge", server: newEdgeServer(cfg.EdgeHTTPAddr, certificates.HTTPHandler(redirect), nil)},
-			serverSpec{name: "public HTTPS edge", server: newEdgeServer(cfg.EdgeHTTPSAddr, router, tlsConfig), tls: true},
-		)
+		edgeServers = []serverSpec{
+			{name: "public HTTP edge", server: newEdgeServer(cfg.EdgeHTTPAddr, edgeCertificates.HTTPHandler(httpHandler), nil)},
+			{name: "public HTTPS edge", server: newEdgeServer(cfg.EdgeHTTPSAddr, router, edgeTLSConfig), tls: true},
+		}
+		servers = append(servers, edgeServers...)
 	}
 	var tcpDone <-chan error
 	stopTCP := func() {}
@@ -312,7 +360,17 @@ func run(ctx context.Context, getenv envLookup) error {
 		completed := make(chan error, 1)
 		tcpDone = completed
 		go func() { completed <- tcpManager.Run(tcpContext) }()
-		log.Printf("dynamic TCP edge enabled on %s", cfg.TCPBindHost)
+		log.Printf("dynamic TCP/UDP edge enabled on %s", cfg.TCPBindHost)
+	}
+	stopPorts := func() {}
+	var portsDone <-chan error
+	if portsManager != nil {
+		portsContext, cancelPorts := context.WithCancel(ctx)
+		stopPorts = cancelPorts
+		completed := make(chan error, 1)
+		portsDone = completed
+		go func() { completed <- portsManager.Run(portsContext) }()
+		log.Printf("web port edge enabled")
 	}
 	errorsChannel := make(chan error, len(servers))
 	serve := func(spec serverSpec) {
@@ -343,8 +401,14 @@ func run(ctx context.Context, getenv envLookup) error {
 		if tcpErr != nil && !errors.Is(tcpErr, context.Canceled) {
 			runErr = fmt.Errorf("TCP edge: %w", tcpErr)
 		}
+	case portsErr := <-portsDone:
+		portsDone = nil
+		if portsErr != nil && !errors.Is(portsErr, context.Canceled) {
+			runErr = fmt.Errorf("web port edge: %w", portsErr)
+		}
 	}
 	stopTCP()
+	stopPorts()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, spec := range servers {
@@ -361,6 +425,18 @@ func run(ctx context.Context, getenv envLookup) error {
 		case <-shutdownCtx.Done():
 			if runErr == nil {
 				runErr = errors.New("TCP edge shutdown timed out")
+			}
+		}
+	}
+	if portsDone != nil {
+		select {
+		case portsErr := <-portsDone:
+			if portsErr != nil && !errors.Is(portsErr, context.Canceled) && runErr == nil {
+				runErr = portsErr
+			}
+		case <-shutdownCtx.Done():
+			if runErr == nil {
+				runErr = errors.New("web port edge shutdown timed out")
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package tcpedge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/udpframe"
 )
 
 type mutableRouteSource struct {
@@ -210,7 +212,8 @@ func TestManagerRestartsUnexpectedlyClosedListener(t *testing.T) {
 	if err := manager.reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	original := manager.workers[publicPort]
+	key := portKey{protocol: domain.ProtocolTCP, port: publicPort}
+	original, _ := manager.workers[key].(*worker)
 	if original == nil {
 		t.Fatal("listener was not created")
 	}
@@ -219,10 +222,107 @@ func TestManagerRestartsUnexpectedlyClosedListener(t *testing.T) {
 	if err := manager.reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if manager.workers[publicPort] == original {
+	if manager.workers[key] == streamWorker(original) {
 		t.Fatal("reconcile retained a worker whose accept loop had exited")
 	}
 	manager.stopAll()
+}
+
+func TestManagerPublishesUDPRouteThroughFramedBackend(t *testing.T) {
+	// Fake agent-side relay: framed TCP listener answering each datagram with
+	// its uppercase echo, exercising the udpframe encapsulation end to end.
+	backend := listenTCP4(t)
+	defer backend.Close()
+	go func() {
+		for {
+			conn, err := backend.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, udpframe.MaxPayload)
+				for {
+					n, err := udpframe.Read(conn, buf)
+					if err != nil {
+						return
+					}
+					reply := bytes.ToUpper(buf[:n])
+					if err := udpframe.Write(conn, reply); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	publicPort := reserveUDP4Port(t)
+	route := domain.Route{
+		ID: "udp-route", ClientID: "agent-1", Name: "udp", Protocol: domain.ProtocolUDP,
+		RemotePort: backend.Addr().(*net.TCPAddr).Port, PublicPort: publicPort,
+		Enabled: true, DesiredRevision: 1, ObservedRevision: 1, TunnelStatus: "up", AgentLastSeenAt: time.Now(),
+	}
+	source := &mutableRouteSource{}
+	source.set(route)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager := New(source, WithBindHost("127.0.0.1"), WithPollInterval(10*time.Millisecond))
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var conn net.Conn
+	var err error
+	for time.Now().Before(deadline) {
+		if manager.PublicStatus(route) == StatusPublished {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := manager.PublicStatus(route); got != StatusPublished {
+		t.Fatalf("udp status=%q want %q", got, StatusPublished)
+	}
+	conn, err = net.Dial("udp4", net.JoinHostPort("127.0.0.1", netPort(publicPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	reply := make([]byte, 64)
+	for attempt := 0; attempt < 20; attempt++ {
+		if _, err := conn.Write([]byte("portloom")); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := conn.Read(reply)
+		if err == nil {
+			if string(reply[:n]) != "PORTLOOM" {
+				t.Fatalf("udp echo=%q want PORTLOOM", reply[:n])
+			}
+			cancel()
+			select {
+			case runErr := <-done:
+				if runErr != nil && !errors.Is(runErr, context.Canceled) {
+					t.Fatalf("Run: %v", runErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("manager did not stop")
+			}
+			return
+		}
+	}
+	t.Fatal("no UDP echo received")
+}
+
+func reserveUDP4Port(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := conn.LocalAddr().(*net.UDPAddr).Port
+	_ = conn.Close()
+	return port
 }
 
 func listenTCP4(t *testing.T) net.Listener {

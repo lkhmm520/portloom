@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+
 	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/sysinfo"
 )
 
 type Status string
@@ -27,6 +29,7 @@ type RouteObservation struct {
 type ObservedState struct {
 	Revision int64              `json:"revision"`
 	Routes   []RouteObservation `json:"routes"`
+	System   *sysinfo.Stats     `json:"system,omitempty"`
 }
 type ServerClient interface {
 	FetchDesired(context.Context, int64) (DesiredState, error)

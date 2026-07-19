@@ -1,3 +1,7 @@
+// Package tcpedge publishes TCP and UDP routes on dedicated public ports and
+// forwards traffic into the loopback tunnel ports maintained by the agents.
+// UDP datagrams are carried across the TCP-only SSH tunnel with the udpframe
+// encapsulation, which the agent unwraps back into datagrams.
 package tcpedge
 
 import (
@@ -12,6 +16,7 @@ import (
 
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/managedssh"
+	"github.com/lkhmm520/portloom/internal/udpframe"
 )
 
 type RouteSource interface {
@@ -19,21 +24,39 @@ type RouteSource interface {
 	GetRoute(context.Context, string) (domain.Route, error)
 }
 
+// TrafficObserver receives per-route traffic accounting from stream workers.
+type TrafficObserver interface {
+	ObserveStream(routeID string, bytesIn, bytesOut int64)
+}
+
+type portKey struct {
+	protocol domain.Protocol
+	port     int
+}
+
+type streamWorker interface {
+	workerRoute() domain.Route
+	running() bool
+	beginStop()
+	finishStop()
+}
+
 type Manager struct {
 	routes                RouteSource
 	bindHost              string
 	pollInterval          time.Duration
 	isolatedAgentBindings bool
-	workers               map[int]*worker
+	workers               map[portKey]streamWorker
 	globalSlots           chan struct{}
 	perRouteLimit         int
+	observer              TrafficObserver
 	statusMu              sync.RWMutex
 	statuses              map[string]publicationState
 }
 
 type publicationState struct {
 	status string
-	worker *worker
+	worker streamWorker
 }
 
 const (
@@ -45,6 +68,8 @@ const (
 	StatusBindError    = "bind_error"
 	StatusPublished    = "published"
 )
+
+const udpSessionIdleTimeout = 60 * time.Second
 
 type Option func(*Manager)
 
@@ -60,6 +85,10 @@ func WithIsolatedAgentBindings() Option {
 	return func(manager *Manager) { manager.isolatedAgentBindings = true }
 }
 
+func WithTrafficObserver(observer TrafficObserver) Option {
+	return func(manager *Manager) { manager.observer = observer }
+}
+
 func WithConnectionLimits(global, perRoute int) Option {
 	return func(manager *Manager) {
 		if global > 0 {
@@ -73,13 +102,13 @@ func WithConnectionLimits(global, perRoute int) Option {
 
 func New(routes RouteSource, options ...Option) *Manager {
 	manager := &Manager{
-		routes:       routes,
-		bindHost:     "0.0.0.0",
-		pollInterval: time.Second,
-		workers:      make(map[int]*worker),
-		globalSlots:  make(chan struct{}, 1024),
+		routes:        routes,
+		bindHost:      "0.0.0.0",
+		pollInterval:  time.Second,
+		workers:       make(map[portKey]streamWorker),
+		globalSlots:   make(chan struct{}, 1024),
 		perRouteLimit: 128,
-		statuses:     make(map[string]publicationState),
+		statuses:      make(map[string]publicationState),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -91,7 +120,7 @@ func New(routes RouteSource, options ...Option) *Manager {
 
 func (m *Manager) Run(ctx context.Context) error {
 	if err := m.reconcile(ctx); err != nil {
-		log.Printf("TCP edge reconcile failed: %v", err)
+		log.Printf("stream edge reconcile failed: %v", err)
 	}
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
@@ -102,7 +131,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := m.reconcile(ctx); err != nil {
-				log.Printf("TCP edge reconcile failed: %v", err)
+				log.Printf("stream edge reconcile failed: %v", err)
 			}
 		}
 	}
@@ -116,9 +145,9 @@ func (m *Manager) reconcile(ctx context.Context) error {
 		return fmt.Errorf("list routes: %w", err)
 	}
 	statuses := make(map[string]publicationState)
-	byPort := make(map[int][]domain.Route)
+	byPort := make(map[portKey][]domain.Route)
 	for _, route := range routes {
-		if route.Protocol != domain.ProtocolTCP {
+		if !route.Protocol.IsStream() {
 			continue
 		}
 		switch {
@@ -130,41 +159,43 @@ func (m *Manager) reconcile(ctx context.Context) error {
 			statuses[route.ID] = publicationState{status: StatusWaitingAgent}
 		default:
 			statuses[route.ID] = publicationState{status: StatusPending}
-			byPort[route.PublicPort] = append(byPort[route.PublicPort], route)
+			key := portKey{protocol: route.Protocol, port: route.PublicPort}
+			byPort[key] = append(byPort[key], route)
 		}
 	}
-	desired := make(map[int]domain.Route)
-	for port, candidates := range byPort {
+	desired := make(map[portKey]domain.Route)
+	for key, candidates := range byPort {
 		if len(candidates) != 1 {
 			for _, route := range candidates {
 				statuses[route.ID] = publicationState{status: StatusConflict}
 			}
 			continue
 		}
-		desired[port] = candidates[0]
+		desired[key] = candidates[0]
 	}
-	for port, current := range m.workers {
-		route, ok := desired[port]
-		if !ok || !sameTarget(current.route, route) || !current.running() {
+	for key, current := range m.workers {
+		route, ok := desired[key]
+		if !ok || !sameTarget(current.workerRoute(), route) || !current.running() {
 			current.beginStop()
 			current.finishStop()
-			delete(m.workers, port)
+			delete(m.workers, key)
 		}
 	}
-	for port, route := range desired {
-		if current, ok := m.workers[port]; ok {
+	for key, route := range desired {
+		if current, ok := m.workers[key]; ok {
 			statuses[route.ID] = publicationState{status: StatusPublished, worker: current}
 			continue
 		}
 		worker, err := m.start(route)
 		if err != nil {
 			statuses[route.ID] = publicationState{status: StatusBindError}
-			log.Printf("TCP edge route %q failed to listen on %s:%d: %v", route.Name, m.bindHost, port, err)
+			log.Printf("stream edge route %q failed to listen on %s %s:%d: %v",
+				route.Name, route.Protocol, m.bindHost, key.port, err)
 			continue
 		}
-		m.workers[port] = worker
+		m.workers[key] = worker
 		statuses[route.ID] = publicationState{status: StatusPublished, worker: worker}
-		log.Printf("TCP edge route %q listening on %s:%d", route.Name, m.bindHost, port)
+		log.Printf("stream edge route %q listening on %s %s:%d", route.Name, route.Protocol, m.bindHost, key.port)
 	}
 	m.replaceStatuses(statuses)
 	return nil
@@ -179,9 +210,9 @@ func (m *Manager) replaceStatuses(statuses map[string]publicationState) {
 	m.statusMu.Unlock()
 }
 
-// PublicStatus returns the observed public-listener state for a TCP route.
+// PublicStatus returns the observed public-listener state for a TCP/UDP route.
 func (m *Manager) PublicStatus(route domain.Route) string {
-	if route.Protocol != domain.ProtocolTCP {
+	if !route.Protocol.IsStream() {
 		return ""
 	}
 	if !route.Enabled {
@@ -207,18 +238,34 @@ func (m *Manager) PublicStatus(route domain.Route) string {
 
 func sameTarget(current, desired domain.Route) bool {
 	return current.ID == desired.ID && current.ClientID == desired.ClientID &&
+		current.Protocol == desired.Protocol &&
 		current.RemotePort == desired.RemotePort && current.PublicPort == desired.PublicPort
 }
 
-func (m *Manager) start(route domain.Route) (*worker, error) {
+func (m *Manager) backendAddress(route domain.Route) (string, error) {
 	backendHost := managedssh.LegacyBindAddress
 	if m.isolatedAgentBindings {
 		var err error
 		backendHost, err = managedssh.BindAddress(route.ClientID)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 	}
+	return net.JoinHostPort(backendHost, strconv.Itoa(route.RemotePort)), nil
+}
+
+func (m *Manager) start(route domain.Route) (streamWorker, error) {
+	backend, err := m.backendAddress(route)
+	if err != nil {
+		return nil, err
+	}
+	if route.Protocol == domain.ProtocolUDP {
+		return m.startUDP(route, backend)
+	}
+	return m.startTCP(route, backend)
+}
+
+func (m *Manager) startTCP(route domain.Route, backend string) (streamWorker, error) {
 	network := "tcp6"
 	if ip := net.ParseIP(m.bindHost); ip != nil && ip.To4() != nil {
 		network = "tcp4"
@@ -230,20 +277,49 @@ func (m *Manager) start(route domain.Route) (*worker, error) {
 	workerContext, cancel := context.WithCancel(context.Background())
 	worker := &worker{
 		route:       route,
-		backend:     net.JoinHostPort(backendHost, strconv.Itoa(route.RemotePort)),
+		backend:     backend,
 		listener:    listener,
 		active:      make(map[net.Conn]struct{}),
 		done:        make(chan struct{}),
 		authorize:   m.authorizeAcceptedRoute,
+		observer:    m.observer,
 		ctx:         workerContext,
 		cancel:      cancel,
 		globalSlots: m.globalSlots,
 		routeSlots:  make(chan struct{}, m.perRouteLimit),
 	}
-	m.workers[route.PublicPort] = worker
-	m.statusMu.Lock()
-	m.statuses[route.ID] = publicationState{status: StatusPublished, worker: worker}
-	m.statusMu.Unlock()
+	worker.wait.Add(1)
+	go worker.serve()
+	return worker, nil
+}
+
+func (m *Manager) startUDP(route domain.Route, backend string) (streamWorker, error) {
+	network := "udp6"
+	if ip := net.ParseIP(m.bindHost); ip != nil && ip.To4() != nil {
+		network = "udp4"
+	}
+	address, err := net.ResolveUDPAddr(network, net.JoinHostPort(m.bindHost, strconv.Itoa(route.PublicPort)))
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP(network, address)
+	if err != nil {
+		return nil, err
+	}
+	workerContext, cancel := context.WithCancel(context.Background())
+	worker := &udpWorker{
+		route:       route,
+		backend:     backend,
+		conn:        conn,
+		sessions:    map[string]*udpSession{},
+		done:        make(chan struct{}),
+		authorize:   m.authorizeAcceptedRoute,
+		observer:    m.observer,
+		ctx:         workerContext,
+		cancel:      cancel,
+		globalSlots: m.globalSlots,
+		routeSlots:  make(chan struct{}, m.perRouteLimit),
+	}
 	worker.wait.Add(1)
 	go worker.serve()
 	return worker, nil
@@ -253,16 +329,16 @@ func (m *Manager) authorizeAcceptedRoute(expected domain.Route) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	current, err := m.routes.GetRoute(ctx, expected.ID)
-	return err == nil && current.Protocol == domain.ProtocolTCP && current.PublicationReady() &&
+	return err == nil && current.Protocol == expected.Protocol && current.PublicationReady() &&
 		sameTarget(expected, current)
 }
 
 func (m *Manager) stopAll() {
-	workers := make([]*worker, 0, len(m.workers))
-	for port, worker := range m.workers {
+	workers := make([]streamWorker, 0, len(m.workers))
+	for key, worker := range m.workers {
 		workers = append(workers, worker)
 		worker.beginStop()
-		delete(m.workers, port)
+		delete(m.workers, key)
 	}
 	finished := make(chan struct{})
 	go func() {
@@ -274,7 +350,7 @@ func (m *Manager) stopAll() {
 	select {
 	case <-finished:
 	case <-time.After(5 * time.Second):
-		log.Printf("TCP edge shutdown timed out with %d worker(s)", len(workers))
+		log.Printf("stream edge shutdown timed out with %d worker(s)", len(workers))
 	}
 	m.replaceStatuses(nil)
 }
@@ -287,6 +363,7 @@ type worker struct {
 	cancel      context.CancelFunc
 	globalSlots chan struct{}
 	routeSlots  chan struct{}
+	observer    TrafficObserver
 	mu          sync.Mutex
 	active      map[net.Conn]struct{}
 	wait        sync.WaitGroup
@@ -296,6 +373,8 @@ type worker struct {
 	done        chan struct{}
 	authorize   func(domain.Route) bool
 }
+
+func (w *worker) workerRoute() domain.Route { return w.route }
 
 func (w *worker) serve() {
 	defer w.wait.Done()
@@ -350,16 +429,23 @@ func (w *worker) proxy(client net.Conn) {
 	defer w.untrack(backend)
 	defer backend.Close()
 
+	var inbound, outbound int64
 	var copies sync.WaitGroup
 	copies.Add(2)
-	go copyStream(&copies, backend, client)
-	go copyStream(&copies, client, backend)
+	go copyStream(&copies, backend, client, &inbound)
+	go copyStream(&copies, client, backend, &outbound)
 	copies.Wait()
+	if w.observer != nil {
+		w.observer.ObserveStream(w.route.ID, inbound, outbound)
+	}
 }
 
-func copyStream(wait *sync.WaitGroup, destination net.Conn, source net.Conn) {
+func copyStream(wait *sync.WaitGroup, destination net.Conn, source net.Conn, counted *int64) {
 	defer wait.Done()
-	_, _ = io.Copy(destination, source)
+	n, _ := io.Copy(destination, source)
+	if counted != nil {
+		*counted += n
+	}
 	if closer, ok := destination.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()
 	}
@@ -417,5 +503,216 @@ func (w *worker) beginStop() {
 }
 
 func (w *worker) finishStop() {
+	w.finishOnce.Do(func() { w.wait.Wait() })
+}
+
+// udpWorker forwards datagrams between a public UDP port and the agent's
+// framed TCP relay behind the SSH tunnel. Each public client address maps to
+// one backend TCP connection; idle sessions expire after a timeout.
+type udpWorker struct {
+	route       domain.Route
+	backend     string
+	conn        *net.UDPConn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	globalSlots chan struct{}
+	routeSlots  chan struct{}
+	observer    TrafficObserver
+	mu          sync.Mutex
+	sessions    map[string]*udpSession
+	wait        sync.WaitGroup
+	stopOnce    sync.Once
+	finishOnce  sync.Once
+	stopped     bool
+	done        chan struct{}
+	authorize   func(domain.Route) bool
+}
+
+type udpSession struct {
+	client   *net.UDPAddr
+	backend  net.Conn
+	lastSeen time.Time
+	bytesIn  int64
+	bytesOut int64
+}
+
+func (w *udpWorker) workerRoute() domain.Route { return w.route }
+
+func (w *udpWorker) running() bool {
+	select {
+	case <-w.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (w *udpWorker) serve() {
+	defer w.wait.Done()
+	defer close(w.done)
+	w.wait.Add(1)
+	go w.expireIdleSessions()
+	buffer := make([]byte, udpframe.MaxPayload)
+	for {
+		length, client, err := w.conn.ReadFromUDP(buffer)
+		if err != nil {
+			return
+		}
+		if length == 0 {
+			continue
+		}
+		session := w.session(client)
+		if session == nil {
+			continue
+		}
+		w.mu.Lock()
+		session.lastSeen = time.Now()
+		session.bytesIn += int64(length)
+		w.mu.Unlock()
+		if err := udpframe.Write(session.backend, buffer[:length]); err != nil {
+			w.dropSession(client.String(), session)
+		}
+	}
+}
+
+func (w *udpWorker) session(client *net.UDPAddr) *udpSession {
+	key := client.String()
+	w.mu.Lock()
+	existing, ok := w.sessions[key]
+	w.mu.Unlock()
+	if ok {
+		return existing
+	}
+	if !w.authorize(w.route) || !w.acquireSlot() {
+		return nil
+	}
+	dialContext, cancel := context.WithTimeout(w.ctx, 10*time.Second)
+	defer cancel()
+	backend, err := (&net.Dialer{}).DialContext(dialContext, "tcp", w.backend)
+	if err != nil {
+		w.releaseSlot()
+		return nil
+	}
+	session := &udpSession{client: client, backend: backend, lastSeen: time.Now()}
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		_ = backend.Close()
+		w.releaseSlot()
+		return nil
+	}
+	if raced, ok := w.sessions[key]; ok {
+		w.mu.Unlock()
+		_ = backend.Close()
+		w.releaseSlot()
+		return raced
+	}
+	w.sessions[key] = session
+	w.mu.Unlock()
+	w.wait.Add(1)
+	go w.readBackend(key, session)
+	return session
+}
+
+func (w *udpWorker) readBackend(key string, session *udpSession) {
+	defer w.wait.Done()
+	buffer := make([]byte, udpframe.MaxPayload)
+	for {
+		length, err := udpframe.Read(session.backend, buffer)
+		if err != nil {
+			w.dropSession(key, session)
+			return
+		}
+		if _, err := w.conn.WriteToUDP(buffer[:length], session.client); err != nil {
+			w.dropSession(key, session)
+			return
+		}
+		w.mu.Lock()
+		session.lastSeen = time.Now()
+		session.bytesOut += int64(length)
+		w.mu.Unlock()
+	}
+}
+
+func (w *udpWorker) dropSession(key string, session *udpSession) {
+	w.mu.Lock()
+	current, ok := w.sessions[key]
+	if !ok || current != session {
+		w.mu.Unlock()
+		return
+	}
+	delete(w.sessions, key)
+	bytesIn, bytesOut := session.bytesIn, session.bytesOut
+	w.mu.Unlock()
+	_ = session.backend.Close()
+	w.releaseSlot()
+	if w.observer != nil {
+		w.observer.ObserveStream(w.route.ID, bytesIn, bytesOut)
+	}
+}
+
+func (w *udpWorker) expireIdleSessions() {
+	defer w.wait.Done()
+	ticker := time.NewTicker(udpSessionIdleTimeout / 4)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-udpSessionIdleTimeout)
+			w.mu.Lock()
+			expired := make(map[string]*udpSession)
+			for key, session := range w.sessions {
+				if session.lastSeen.Before(cutoff) {
+					expired[key] = session
+				}
+			}
+			w.mu.Unlock()
+			for key, session := range expired {
+				w.dropSession(key, session)
+			}
+		}
+	}
+}
+
+func (w *udpWorker) acquireSlot() bool {
+	select {
+	case w.globalSlots <- struct{}{}:
+	default:
+		return false
+	}
+	select {
+	case w.routeSlots <- struct{}{}:
+		return true
+	default:
+		<-w.globalSlots
+		return false
+	}
+}
+
+func (w *udpWorker) releaseSlot() {
+	<-w.routeSlots
+	<-w.globalSlots
+}
+
+func (w *udpWorker) beginStop() {
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.stopped = true
+		sessions := make(map[string]*udpSession, len(w.sessions))
+		for key, session := range w.sessions {
+			sessions[key] = session
+		}
+		w.mu.Unlock()
+		w.cancel()
+		_ = w.conn.Close()
+		for key, session := range sessions {
+			w.dropSession(key, session)
+		}
+	})
+}
+
+func (w *udpWorker) finishStop() {
 	w.finishOnce.Do(func() { w.wait.Wait() })
 }

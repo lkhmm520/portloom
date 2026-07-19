@@ -10,10 +10,10 @@ import (
 )
 
 // NewCertificateManager creates the built-in ACME manager. It deliberately
-// authorizes only the management hostname and currently enabled HTTP routes;
+// authorizes only the management hostname and currently enabled HTTPS routes;
 // this prevents a wildcard DNS record from being used to obtain certificates
-// for arbitrary hostnames.
-func NewCertificateManager(cacheDir, publicHost string, routes HTTPDomainSource) (*autocert.Manager, error) {
+// for arbitrary hostnames. Plain-HTTP routes never request certificates.
+func NewCertificateManager(cacheDir, publicHost string, routes CertificateDomainSource) (*autocert.Manager, error) {
 	if publicHost == "" {
 		return nil, errors.New("public host is required")
 	}
@@ -40,7 +40,7 @@ func NewCertificateManager(cacheDir, publicHost string, routes HTTPDomainSource)
 			if host == publicHost {
 				return nil
 			}
-			enabled, err := routes.HTTPDomainEnabled(ctx, host)
+			enabled, err := routes.HTTPSDomainEnabled(ctx, host)
 			if err != nil {
 				return err
 			}

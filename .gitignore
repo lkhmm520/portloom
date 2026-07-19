@@ -14,3 +14,6 @@
 !.env.example
 coverage.out
 /examples/*.env
+sandbox-go.tar.gz
+goproxy/
+fetch-go-deps.sh

@@ -188,3 +188,10 @@ jobs:
               gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG"
             fi
           fi
+      - name: Clean up the one-shot finalize marker tag
+        if: always() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${GITHUB_REF_NAME}" \
+            || echo "marker tag ${GITHUB_REF_NAME} was already removed"

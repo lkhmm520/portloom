@@ -2,6 +2,14 @@
 
 > 来源:用户反馈 6 条,去重归纳为 5 个议题。原始反馈编号在每项末尾标注。
 > 整理日期:2026-07-19
+>
+> **状态更新(2026-07-19):5 个议题全部完成。**
+>
+> - [x] 议题 1:协议拆分为 HTTPS / HTTP / TCP / UDP,HTTP 不再强制跳转与申请证书(旧库中的 http 路由自动迁移为 https,行为不变)
+> - [x] 议题 2:同域名多路由 —— 路径前缀路由(可选去除前缀)、自定义公网端口(多个 web 路由可共享同一端口)、与管理域名共享(路径前缀方式,保留 /api /assets /healthz)
+> - [x] 议题 3:TCP 公网发布默认启用(`TM_TCP_EDGE_BIND_HOST=off` 可关);UDP 通过隧道内数据报中继(长度前缀帧)实现端到端转发
+> - [x] 议题 4:安装器新增 `--http-port` / `--https-port` / `--disable-tcp-edge`,`.env.example` 与 compose 补充 `TM_EDGE_*_ADDR`、`TM_TCP_EDGE_BIND_HOST` 说明(含 ACME 端口注意事项)
+> - [x] 议题 5:新增 `/api/v1/metrics`;仪表盘展示近 60 分钟流量曲线、总请求/进出字节,以及 Server 与各 Agent 的 CPU / 内存占用(Agent 随心跳上报)
 
 ## P0 — 路由协议与域名限制(反馈最集中)
 

@@ -21,6 +21,7 @@ services:
       TM_TLS_CACHE_DIR: ${TM_TLS_CACHE_DIR:-/data/certs}
       TM_ACME_EMAIL: ${TM_ACME_EMAIL:-}
       TM_PUBLIC_HOST: ${TM_PUBLIC_HOST:-}
+      TM_TCP_EDGE_BIND_HOST: ${TM_TCP_EDGE_BIND_HOST:-}
       TM_DATABASE_PATH: /data/portloom.db
       TM_WEB_DIR: /app/web
       TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN:?set TM_ADMIN_TOKEN in .env}

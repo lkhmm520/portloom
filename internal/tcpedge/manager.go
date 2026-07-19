@@ -288,9 +288,19 @@ func (m *Manager) startTCP(route domain.Route, backend string) (streamWorker, er
 		globalSlots: m.globalSlots,
 		routeSlots:  make(chan struct{}, m.perRouteLimit),
 	}
+	m.publishStatus(route.ID, worker)
 	worker.wait.Add(1)
 	go worker.serve()
 	return worker, nil
+}
+
+// publishStatus makes a freshly started worker visible immediately so status
+// reads between listener creation and the end of the reconcile pass are
+// already accurate.
+func (m *Manager) publishStatus(routeID string, worker streamWorker) {
+	m.statusMu.Lock()
+	m.statuses[routeID] = publicationState{status: StatusPublished, worker: worker}
+	m.statusMu.Unlock()
 }
 
 func (m *Manager) startUDP(route domain.Route, backend string) (streamWorker, error) {
@@ -320,6 +330,7 @@ func (m *Manager) startUDP(route domain.Route, backend string) (streamWorker, er
 		globalSlots: m.globalSlots,
 		routeSlots:  make(chan struct{}, m.perRouteLimit),
 	}
+	m.publishStatus(route.ID, worker)
 	worker.wait.Add(1)
 	go worker.serve()
 	return worker, nil

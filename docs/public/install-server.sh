@@ -9,11 +9,19 @@ Usage: install-server.sh --domain portloom.example.com [options]
   --home PATH         Install directory (default: ~/.portloom/server)
   --web-port PORT     Loopback management port (default: 8080)
   --ssh-port PORT     Public managed SSH tunnel port (default: 2222)
+  --http-port PORT    Public HTTP edge port (default: 80)
+  --https-port PORT   Public HTTPS edge port (default: 443)
+                      Warning: ACME HTTP-01 validation requires that public
+                      port 80 still reaches this host (e.g. router forward
+                      80 -> the chosen --http-port), otherwise certificates
+                      cannot be issued.
   --version TAG       PortLoom image tag (default: latest)
   --migrate-native-edge
                       Explicitly migrate a legacy installer-managed Caddy deployment
-  --enable-tcp-edge   Enable explicit public TCP route listeners (binds 0.0.0.0 by default)
-                      Override with PORTLOOM_TCP_EDGE_BIND_HOST before running
+  --enable-tcp-edge   Kept for compatibility: the TCP/UDP edge is now enabled
+                      by default (binds 0.0.0.0). Override the bind address
+                      with PORTLOOM_TCP_EDGE_BIND_HOST before running.
+  --disable-tcp-edge  Turn the public TCP/UDP route listeners off
 
 PortLoom itself owns public TCP 80 and 443, obtains and renews ACME
 certificates, and routes enabled HTTP hostnames. No Caddy/Nginx/NPM service is
@@ -41,8 +49,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --domain) domain=${2:-}; shift 2;; --home) home=${2:-}; shift 2;;
     --web-port) web_port=${2:-}; shift 2;; --ssh-port) ssh_port=${2:-}; shift 2;;
+    --http-port) edge_http_port=${2:-}; shift 2;; --https-port) edge_https_port=${2:-}; shift 2;;
     --version) version=${2:-}; shift 2;; --migrate-native-edge) migrate_native_edge=true; shift;;
     --enable-tcp-edge) enable_tcp_edge=true; tcp_edge_bind_host=${PORTLOOM_TCP_EDGE_BIND_HOST:-0.0.0.0}; shift;;
+    --disable-tcp-edge) enable_tcp_edge=false; tcp_edge_bind_host=off; shift;;
     -h|--help) usage; exit 0;; *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
   esac
 done

@@ -224,3 +224,136 @@ func TestGatewayReusesUpstreamTransportConnections(t *testing.T) {
 		t.Fatalf("upstream connections=%d, want 1 reused connection", got)
 	}
 }
+
+func readyWebRoute(protocol domain.Protocol, host, prefix string, publicPort, remotePort int) domain.Route {
+	return domain.Route{
+		ID: "r-" + host + prefix, Protocol: protocol, Domain: host, PathPrefix: prefix, PublicPort: publicPort,
+		RemotePort: remotePort, Enabled: true, DesiredRevision: 1, ObservedRevision: 1,
+		TunnelStatus: "up", AgentLastSeenAt: time.Now(),
+	}
+}
+
+func TestGatewayMatchesSchemePathAndPort(t *testing.T) {
+	prefixBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "prefix "+r.URL.Path)
+	}))
+	t.Cleanup(prefixBackend.Close)
+	prefixPort := prefixBackend.Listener.Addr().(*net.TCPAddr).Port
+	rootBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "root "+r.URL.Path)
+	}))
+	t.Cleanup(rootBackend.Close)
+	rootPort := rootBackend.Listener.Addr().(*net.TCPAddr).Port
+
+	source := &staticRouteSource{routes: []domain.Route{
+		readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "", 0, rootPort),
+		readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "/media", 0, prefixPort),
+	}}
+	handler := New(source)
+
+	serve := func(edge Edge, path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "https://app.example.com"+path, nil)
+		request = request.WithContext(WithEdge(request.Context(), edge))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	httpsEdge := Edge{Scheme: "https", Port: 443}
+	if got := serve(httpsEdge, "/media/tv").Body.String(); got != "prefix /media/tv" {
+		t.Fatalf("longest prefix match failed: %q", got)
+	}
+	if got := serve(httpsEdge, "/other").Body.String(); got != "root /other" {
+		t.Fatalf("root fallback failed: %q", got)
+	}
+	// The HTTPS-only domain must not be served on the plain-HTTP edge.
+	if code := serve(Edge{Scheme: "http", Port: 80}, "/other").Code; code != http.StatusNotFound {
+		t.Fatalf("plain edge served an HTTPS route: %d", code)
+	}
+	// A non-default edge port must not match default-port routes.
+	if code := serve(Edge{Scheme: "https", Port: 8443}, "/other").Code; code != http.StatusNotFound {
+		t.Fatalf("extra port matched default-port route: %d", code)
+	}
+}
+
+func TestGatewayStripsPathPrefixWhenRequested(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "stripped "+r.URL.Path)
+	}))
+	t.Cleanup(backend.Close)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	route := readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "/media", 0, port)
+	route.StripPath = true
+	handler := New(&staticRouteSource{routes: []domain.Route{route}})
+
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/media/tv/1", nil)
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if got := response.Body.String(); got != "stripped /tv/1" {
+		t.Fatalf("strip path result=%q", got)
+	}
+	request = httptest.NewRequest(http.MethodGet, "https://app.example.com/media", nil)
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if got := response.Body.String(); got != "stripped /" {
+		t.Fatalf("bare prefix strip result=%q", got)
+	}
+}
+
+func TestGatewayRedirectsPlainHTTPOnlyWhenHTTPSRouteExists(t *testing.T) {
+	route := readyWebRoute(domain.ProtocolHTTPS, "secure.example.com", "", 0, 1)
+	handler := New(&staticRouteSource{routes: []domain.Route{route}}, WithHTTPSRedirect(443))
+	request := httptest.NewRequest(http.MethodGet, "http://secure.example.com/x?a=1", nil)
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "http", Port: 80}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status=%d", response.Code)
+	}
+	if got := response.Header().Get("Location"); got != "https://secure.example.com/x?a=1" {
+		t.Fatalf("location=%q", got)
+	}
+	// Legacy listeners (no edge context) never redirect.
+	request = httptest.NewRequest(http.MethodGet, "http://secure.example.com/x", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code == http.StatusPermanentRedirect {
+		t.Fatal("legacy listener unexpectedly redirected")
+	}
+}
+
+type recordingObserver struct {
+	requests atomic.Int64
+	in       atomic.Int64
+	out      atomic.Int64
+}
+
+func (o *recordingObserver) ObserveHTTP(_ string, requestBytes, responseBytes int64) {
+	o.requests.Add(1)
+	o.in.Add(requestBytes)
+	o.out.Add(responseBytes)
+}
+
+func TestGatewayCountsTraffic(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, strings.Repeat("y", 32))
+	}))
+	t.Cleanup(backend.Close)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	observer := &recordingObserver{}
+	handler := New(&staticRouteSource{routes: []domain.Route{
+		readyWebRoute(domain.ProtocolHTTPS, "app.example.com", "", 0, port),
+	}}, WithTrafficObserver(observer))
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.com/upload", strings.NewReader(strings.Repeat("x", 64)))
+	request = request.WithContext(WithEdge(request.Context(), Edge{Scheme: "https", Port: 443}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d", response.Code)
+	}
+	if observer.requests.Load() != 1 || observer.in.Load() != 64 || observer.out.Load() != 32 {
+		t.Fatalf("observed requests=%d in=%d out=%d", observer.requests.Load(), observer.in.Load(), observer.out.Load())
+	}
+}

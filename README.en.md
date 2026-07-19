@@ -17,7 +17,7 @@
 
 PortLoom's default path needs two Linux hosts with Docker Compose: a public VPS running Server and managed sshd, and a NAS or internal host running Agent. Server natively listens on public ports 80/443 and obtains certificates with autocert HTTP-01; the default path needs no Caddy, Nginx Proxy Manager, or host-OpenSSH changes. Install Server, generate one Agent command in the WebUI, then add an HTTP route.
 
-The built-in public ingress fully supports hostname-based **HTTP/HTTPS** publishing. TCP fields remain compatibility metadata only: they do not create a public TCP listener and are never shown as published/healthy in the WebUI.
+The built-in public ingress supports four route protocols: **HTTPS** (automatic certificates plus HTTP redirect), **HTTP** (plain-text publishing without a certificate), and **TCP**/**UDP** (dedicated public VPS ports; UDP is carried across the tunnel through a datagram relay). One domain can host multiple routes at the same time: split by path prefix (such as `example.com/jellyfin`), by custom public port (such as `example.com:8443`), or shared with the management domain via a path prefix.
 
 ## Architecture
 
@@ -140,7 +140,9 @@ Run `npm run docs:dev` for documentation development. The portals are [Chinese](
 ## Current boundaries
 
 - one Server writer; no active/active SQLite deployment;
-- the built-in public ingress fully supports HTTP/HTTPS Host routes only; existing TCP records are control-plane metadata;
+- the management edge ports can be moved with `TM_EDGE_HTTP_ADDR`/`TM_EDGE_HTTPS_ADDR` (or the installer's `--http-port/--https-port`); when port 80 moves, public port 80 must still reach the HTTP edge or ACME HTTP-01 issuance fails;
+- UDP forwarding is encapsulated over the TCP tunnel (length-prefixed frames), suited to small/medium datagrams such as DNS or WireGuard handshakes; throughput is below native UDP;
+- traffic and resource metrics are kept in memory and reset when the Server restarts;
 - `tunnel_group` is metadata today; use multiple Agents/Clients for independent SSH master connections.
 
 ## Security

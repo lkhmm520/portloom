@@ -6,9 +6,9 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="PortLoom administration console" data-i18n-content="meta.description">
   <title>PortLoom</title>
-  <link rel="stylesheet" href="/assets/app.css?v=20260717.4">
-  <script defer src="/assets/i18n.js?v=20260717.4"></script>
-  <script defer src="/assets/app.js?v=20260717.4"></script>
+  <link rel="stylesheet" href="/assets/app.css?v=20260719.1">
+  <script defer src="/assets/i18n.js?v=20260719.1"></script>
+  <script defer src="/assets/app.js?v=20260719.1"></script>
 </head>
 <body>
   <div id="login-screen" class="login-screen" aria-labelledby="login-title">
@@ -63,6 +63,14 @@
         </div>
         <div class="panel-grid">
           <article class="panel span-2">
+            <div class="panel-heading"><div><p class="eyebrow" data-i18n="dashboard.liveOverview">Live overview</p><h2 data-i18n="dashboard.traffic">Traffic (last 60 minutes)</h2></div><div id="traffic-totals" class="traffic-totals"></div></div>
+            <div id="traffic-chart" class="traffic-chart empty-state" data-i18n="dashboard.noMetrics">No metrics available yet.</div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow" data-i18n="dashboard.statusModel">Status model</p><h2 data-i18n="dashboard.resources">Resource usage</h2></div></div>
+            <div id="resource-list" class="resource-list empty-state" data-i18n="dashboard.noMetrics">No metrics available yet.</div>
+          </article>
+          <article class="panel span-2">
             <div class="panel-heading"><div><p class="eyebrow" data-i18n="dashboard.liveOverview">Live overview</p><h2 data-i18n="dashboard.routeHealth">Route health</h2></div><button class="text-button" data-goto="routes" data-i18n="dashboard.manageRoutes">Manage routes →</button></div>
             <div id="dashboard-routes" class="route-health-list empty-state" data-i18n="dashboard.noRouteData">No route data loaded.</div>
           </article>
@@ -96,7 +104,7 @@
       <section id="view-routes" class="view" aria-labelledby="page-title">
         <article class="panel">
           <div class="panel-heading"><p class="eyebrow" data-i18n="routes.desiredConfiguration">Desired configuration</p></div>
-          <p class="muted panel-copy" data-i18n="routes.boundary">The built-in public ingress fully supports HTTP/HTTPS routes only. Existing TCP records are shown as metadata, not as published listeners.</p>
+          <p class="muted panel-copy" data-i18n="routes.boundary">HTTP/HTTPS routes use domains, optional path prefixes, and custom public ports; TCP routes publish an explicit VPS port and UDP routes are carried over the tunnel through a datagram relay.</p>
           <div class="table-wrap route-table-wrap"><table><thead><tr><th data-i18n="table.route">Route</th><th data-i18n="table.target">Target</th><th data-i18n="table.exposure">Exposure</th><th data-i18n="table.layeredStatus">Layered status</th><th data-i18n="table.revision">Revision</th><th class="align-right" data-i18n="table.actions">Actions</th></tr></thead><tbody id="routes-body"></tbody></table></div>
           <div id="routes-empty" class="empty-state" data-i18n="routes.empty">No HTTP routes configured. Add one to publish a local web service.</div>
         </article>
@@ -111,15 +119,17 @@
       <div class="form-grid">
         <label class="span-2"><span data-i18n="form.name">Name</span><input name="name" required maxlength="80" placeholder="Media server" data-i18n-placeholder="form.namePlaceholder"></label>
         <label><span data-i18n="form.client">Client</span><select id="route-client" name="client_id" required></select></label>
-        <label><span data-i18n="form.protocol">Protocol</span><select id="route-protocol" name="protocol"><option value="http">HTTP/HTTPS</option><option value="tcp">TCP</option></select></label>
+        <label><span data-i18n="form.protocol">Protocol</span><select id="route-protocol" name="protocol"><option value="https" selected>HTTPS</option><option value="http">HTTP</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
         <label id="route-domain-field" class="span-2"><span data-i18n="form.publicDomain">Public domain</span><input name="domain" maxlength="253" placeholder="media.example.com"></label>
-        <label id="route-public-port-field" hidden><span data-i18n="form.publicPort">Public TCP port</span><input name="public_port" type="number" min="1" max="65535" placeholder="24443"></label>
+        <label id="route-path-field"><span data-i18n="form.pathPrefix">Path prefix</span><input name="path_prefix" maxlength="200" placeholder="/jellyfin" data-i18n-placeholder="form.pathPrefixPlaceholder"></label>
+        <label id="route-public-port-field"><span data-i18n="form.publicPort">Public port</span><input name="public_port" type="number" min="1" max="65535" placeholder="24443"><small id="route-public-port-hint" class="field-hint" data-i18n="form.publicPortWeb">Leave empty for the default 80/443.</small></label>
         <label><span data-i18n="form.localHost">Local host</span><input name="local_host" required value="127.0.0.1" placeholder="127.0.0.1"></label>
         <label><span data-i18n="form.localPort">Local port</span><input name="local_port" type="number" min="1" max="65535" required placeholder="8080"></label>
         <label><span data-i18n="form.tunnelGroup">Tunnel group</span><input name="tunnel_group" value="web" required maxlength="80"></label>
+        <label id="route-strip-field" class="switch-row span-2"><input name="strip_path" type="checkbox"><span class="switch" aria-hidden="true"></span><span><strong data-i18n="form.stripPath">Strip path prefix</strong><small data-i18n="form.stripPathDescription">Remove the path prefix before forwarding to the local service.</small></span></label>
         <label class="switch-row span-2"><input name="enabled" type="checkbox" checked><span class="switch" aria-hidden="true"></span><span><strong data-i18n="form.enabled">Enabled</strong><small data-i18n="form.enabledDescription">Include this route in the desired agent configuration.</small></span></label>
       </div>
-      <p class="muted" data-i18n="routes.boundaryShort">HTTP/HTTPS routes use domains; TCP routes publish an explicit VPS port after the Agent converges.</p>
+      <p class="muted" data-i18n="routes.boundaryShort">HTTP/HTTPS routes use domains with optional path prefixes and shared ports; TCP routes publish an explicit VPS port after the Agent converges, and UDP rides the tunnel through a datagram relay.</p>
       <p id="route-form-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button class="button secondary" data-close-dialog type="button" data-i18n="common.cancel">Cancel</button><button class="button primary" type="submit" data-i18n="form.saveRoute">Save route</button></div>
     </form>

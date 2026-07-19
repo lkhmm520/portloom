@@ -17,7 +17,7 @@
 
 PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 主机：一台公网 VPS 运行 Server 与受管 sshd，一台 NAS 或内网主机运行 Agent。Server 原生监听公网 80/443，使用 autocert HTTP-01 获取证书；默认路径不要求预先配置 Caddy、Nginx Proxy Manager 或修改宿主 OpenSSH。安装 Server 后，在 WebUI 生成一条 Agent 命令，再添加 HTTP 路由即可。
 
-当前内置公网入口完整支持按域名发布 **HTTP/HTTPS** 服务。TCP 字段只作为兼容元数据保留，不会自动创建公网 TCP 监听，也不会在 WebUI 中显示为 published/healthy。
+内置公网入口支持四种路由协议：**HTTPS**（自动申请证书 + HTTP 跳转）、**HTTP**（纯明文发布，不申请证书）、**TCP** 与 **UDP**（发布指定的 VPS 公网端口，UDP 经隧道内数据报中继转发）。同一个域名可以同时挂多条路由：按路径前缀（如 `example.com/jellyfin`）、按自定义公网端口（如 `example.com:8443`）区分，也可以与管理域名共享（路径前缀方式）。
 
 ## 工作原理
 
@@ -39,7 +39,10 @@ PortLoom 的默认安装路径只需要两台能运行 Docker Compose 的 Linux 
 | --- | --- |
 | **两主机安装** | 公网主机安装 Server 套件，内网主机只安装 Agent |
 | **一条 Agent 命令** | WebUI 生成带一次性令牌、固定主机公钥和匹配版本的 Shell 安装命令 |
-| **内置 HTTPS** | Server 使用 autocert HTTP-01，只为管理域名和已启用的 HTTP 路由申请证书并持久化到 `/data/certs` |
+| **内置 HTTPS** | Server 使用 autocert HTTP-01，只为管理域名和已启用的 HTTPS 路由申请证书并持久化到 `/data/certs` |
+| **四协议路由** | HTTPS / HTTP / TCP / UDP；HTTP 不强制跳转 HTTPS，TCP/UDP 直接发布公网端口 |
+| **域名复用** | 同一域名支持多条路由：路径前缀、自定义公网端口、HTTP 与 HTTPS 并存 |
+| **流量与资源监控** | 仪表盘展示近 60 分钟流量曲线、每路由计数以及 Server/Agent 的 CPU 与内存占用 |
 | **受管 SSH** | 独立 sshd 容器仅允许公钥认证和回环远程转发，不修改宿主 sshd |
 | **分层状态** | 本地服务、SSH 隧道和 HTTP 公网发布状态分别展示 |
 | **小型控制面** | Go Server、Go Agent、SQLite，无外部数据库或 Docker socket |
@@ -140,7 +143,9 @@ npm run docs:build
 ## 当前边界
 
 - 当前 Server 预期单实例运行，不支持 active/active SQLite 写入；
-- 内置公网入口只完整支持 HTTP/HTTPS Host 路由；已有 TCP 记录仅为控制平面元数据；
+- 管理入口端口可通过 `TM_EDGE_HTTP_ADDR`/`TM_EDGE_HTTPS_ADDR`（或安装器 `--http-port/--https-port`）修改；改掉 80 端口后需保证公网 80 仍可转发到 HTTP 边缘端口，否则 ACME HTTP-01 证书签发会失败；
+- UDP 转发经隧道内 TCP 封装（长度前缀帧），适合 DNS/WireGuard 握手等中小数据报场景，吞吐弱于原生 UDP；
+- 流量与资源指标保存在内存中，Server 重启后归零；
 - `tunnel_group` 当前保存为元数据；需要独立 SSH 主连接时使用多个 Agent/Client。
 
 ## 安全

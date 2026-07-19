@@ -10,6 +10,7 @@
   try { savedLocale = localStorage.getItem(LANGUAGE_KEY) || ""; } catch (_) { /* storage may be unavailable */ }
   const state = {
     token: sessionStorage.getItem(TOKEN_KEY) || "", system: {}, clients: [], tokens: [], routes: [],
+    metrics: null,
     view: "dashboard", deleteID: "", locale: i18n.normalizeLocale(savedLocale), loaded: false,
     loading: false, apiOnline: null, updatedAt: null
   };
@@ -211,14 +212,16 @@
   async function loadAll({ quiet = false, signal } = {}) {
     setLoading(true);
     try {
-      const [systemPayload, clientsPayload, tokensPayload, routesPayload] = await Promise.all([
-        request("/system", { signal }), request("/clients", { signal }), request("/enrollment-tokens", { signal }), request("/routes", { signal })
+      const [systemPayload, clientsPayload, tokensPayload, routesPayload, metricsPayload] = await Promise.all([
+        request("/system", { signal }), request("/clients", { signal }), request("/enrollment-tokens", { signal }), request("/routes", { signal }),
+        request("/metrics", { signal }).catch(error => { if (error.status === 401 || error.status === 403) throw error; return null; })
       ]);
       if (signal?.aborted) throw new APIError(t("error.cancelled"), 0);
       state.system = systemPayload || {};
       state.clients = asList(clientsPayload, "clients");
       state.tokens = asList(tokensPayload, "tokens");
       state.routes = asList(routesPayload, "routes");
+      state.metrics = metricsPayload || null;
       state.loaded = true;
       renderAll();
       setAPIState(true);
@@ -236,7 +239,108 @@
   }
 
   function renderAll() {
-    renderDashboard(); renderClients(); renderTokens(); renderRoutes(); populateClientSelect();
+    renderDashboard(); renderTraffic(); renderResources(); renderClients(); renderTokens(); renderRoutes(); populateClientSelect();
+  }
+
+  function formatBytes(value) {
+    const bytes = Number(value) || 0;
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ["KiB", "MiB", "GiB", "TiB"];
+    let scaled = bytes;
+    let unit = "B";
+    for (const next of units) {
+      if (scaled < 1024) break;
+      scaled /= 1024;
+      unit = next;
+    }
+    return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)} ${unit}`;
+  }
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function sparkline(samples, pick, width, height, className) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.classList.add("spark");
+    const values = samples.map(pick);
+    const peak = Math.max(1, ...values);
+    const step = width / Math.max(1, values.length - 1);
+    const points = values.map((value, index) =>
+      `${(index * step).toFixed(1)},${(height - (value / peak) * (height - 2) - 1).toFixed(1)}`);
+    const area = document.createElementNS(SVG_NS, "polygon");
+    area.setAttribute("points", `0,${height} ${points.join(" ")} ${width},${height}`);
+    area.classList.add(`${className}-fill`);
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", points.join(" "));
+    line.setAttribute("fill", "none");
+    line.classList.add(`${className}-line`);
+    svg.append(area, line);
+    return svg;
+  }
+
+  function renderTraffic() {
+    const chart = $("#traffic-chart");
+    const totals = $("#traffic-totals");
+    if (!chart || !totals) return;
+    const traffic = state.metrics?.traffic;
+    totals.replaceChildren();
+    if (!traffic || !Array.isArray(traffic.series) || !traffic.series.length) {
+      chart.className = "traffic-chart empty-state";
+      chart.replaceChildren();
+      chart.textContent = t("dashboard.noMetrics");
+      return;
+    }
+    chart.className = "traffic-chart";
+    chart.replaceChildren(sparkline(traffic.series, sample => (Number(sample.bytes_in) || 0) + (Number(sample.bytes_out) || 0), 600, 120, "traffic"));
+    const total = traffic.total || {};
+    for (const [label, value] of [
+      [t("dashboard.requests"), String(total.requests || 0)],
+      [t("dashboard.bytesIn"), formatBytes(total.bytes_in)],
+      [t("dashboard.bytesOut"), formatBytes(total.bytes_out)]
+    ]) {
+      const item = el("span", "traffic-total");
+      item.append(el("b", "", value), el("small", "", label));
+      totals.append(item);
+    }
+  }
+
+  function resourceRow(name, stats) {
+    const row = el("div", "resource-row");
+    const title = el("div");
+    title.append(el("span", "cell-title", name));
+    const cpu = Number(stats?.cpu_percent) || 0;
+    const rss = Number(stats?.rss_bytes) || 0;
+    const memTotal = Number(stats?.mem_total_bytes) || 0;
+    const memAvailable = Number(stats?.mem_available_bytes) || 0;
+    const memUsedPercent = memTotal > 0 ? Math.round((memTotal - memAvailable) / memTotal * 100) : 0;
+    title.append(el("span", "cell-detail", `${t("dashboard.cpu")} ${cpu.toFixed(1)}% · ${t("dashboard.memory")} ${formatBytes(rss)}${memTotal ? ` (${memUsedPercent}%)` : ""}`));
+    row.append(title);
+    const meter = el("div", "meter");
+    const fill = el("i");
+    fill.style.width = `${Math.min(100, Math.max(2, cpu))}%`;
+    meter.append(fill);
+    row.append(meter);
+    return row;
+  }
+
+  function renderResources() {
+    const container = $("#resource-list");
+    if (!container) return;
+    const metricsPayload = state.metrics;
+    if (!metricsPayload || (!metricsPayload.server && !metricsPayload.agents)) {
+      container.className = "resource-list empty-state";
+      container.replaceChildren();
+      container.textContent = t("dashboard.noMetrics");
+      return;
+    }
+    container.className = "resource-list";
+    container.replaceChildren();
+    if (metricsPayload.server) container.append(resourceRow(t("dashboard.server"), metricsPayload.server));
+    for (const [agentID, stats] of Object.entries(metricsPayload.agents || {})) {
+      const client = state.clients.find(candidate => candidate.id === agentID);
+      container.append(resourceRow(client ? clientName(client) : agentID, stats));
+    }
   }
 
   function renderDashboard() {
@@ -307,8 +411,11 @@
   }
 
   function routeExposure(route) {
-    if (route.protocol !== "tcp") return route.domain || "—";
-    return route.public_port ? `TCP :${route.public_port}` : t("routes.tcpAuto");
+    if (route.protocol === "tcp") return route.public_port ? `TCP :${route.public_port}` : t("routes.tcpAuto");
+    if (route.protocol === "udp") return route.public_port ? `UDP :${route.public_port}` : t("routes.udpAuto");
+    const scheme = route.protocol === "http" ? "http://" : "https://";
+    const port = route.public_port ? `:${route.public_port}` : "";
+    return route.domain ? `${scheme}${route.domain}${port}${route.path_prefix || ""}` : "—";
   }
 
   function renderRoutes() {
@@ -407,14 +514,16 @@
   }
 
   function syncRouteProtocolFields(form) {
-    const protocol = String(form.elements.protocol.value || "http").toLowerCase();
-    const tcp = protocol === "tcp";
-    $("#route-domain-field").hidden = tcp;
-    $("#route-public-port-field").hidden = !tcp;
-    form.elements.domain.required = !tcp;
-    form.elements.public_port.required = tcp;
-    if (tcp && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "tcp";
-    if (!tcp && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "web";
+    const protocol = String(form.elements.protocol.value || "https").toLowerCase();
+    const stream = protocol === "tcp" || protocol === "udp";
+    $("#route-domain-field").hidden = stream;
+    $("#route-path-field").hidden = stream;
+    $("#route-strip-field").hidden = stream;
+    form.elements.domain.required = !stream;
+    form.elements.public_port.required = stream;
+    $("#route-public-port-hint").textContent = t(stream ? "form.publicPortStream" : "form.publicPortWeb");
+    if (stream && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = protocol;
+    if (!stream && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "web";
   }
 
   function openRouteDialog(route) {
@@ -423,13 +532,17 @@
     $("#route-id").value = route?.id || "";
     const tcpOption = form.elements.protocol.querySelector('option[value="tcp"]');
     tcpOption.disabled = !state.system?.tcp_edge && route?.protocol !== "tcp";
+    const udpOption = form.elements.protocol.querySelector('option[value="udp"]');
+    udpOption.disabled = !state.system?.udp_edge && route?.protocol !== "udp";
     if (route) {
-      ["name", "client_id", "protocol", "domain", "local_host", "local_port", "public_port", "tunnel_group"].forEach(key => {
+      ["name", "client_id", "protocol", "domain", "path_prefix", "local_host", "local_port", "tunnel_group"].forEach(key => {
         const input = form.elements[key]; if (input && route[key] !== undefined) input.value = route[key];
       });
+      form.elements.public_port.value = route.public_port || "";
+      form.elements.strip_path.checked = Boolean(route.strip_path);
       form.elements.enabled.checked = Boolean(route.enabled);
     } else {
-      form.elements.protocol.value = "http"; form.elements.local_host.value = "127.0.0.1";
+      form.elements.protocol.value = "https"; form.elements.local_host.value = "127.0.0.1";
       form.elements.tunnel_group.value = "web"; form.elements.enabled.checked = true;
     }
     form.elements.client_id.disabled = Boolean(route);
@@ -438,17 +551,20 @@
   }
   function routePayload(form) {
     const data = new FormData(form);
-    const protocol = String(form.elements.protocol.value || "http").toLowerCase();
+    const protocol = String(form.elements.protocol.value || "https").toLowerCase();
+    const stream = protocol === "tcp" || protocol === "udp";
     return {
       name: String(data.get("name")).trim(), client_id: String(form.elements.client_id.value), protocol,
-      domain: protocol === "http" ? String(data.get("domain")).trim().toLowerCase() : "",
+      domain: stream ? "" : String(data.get("domain")).trim().toLowerCase(),
+      path_prefix: stream ? "" : String(data.get("path_prefix") || "").trim(),
+      strip_path: stream ? false : data.get("strip_path") === "on",
       local_host: String(data.get("local_host")).trim(), local_port: Number(data.get("local_port")),
-      public_port: protocol === "tcp" ? Number(data.get("public_port")) : 0,
+      public_port: Number(data.get("public_port")) || 0,
       tunnel_group: String(data.get("tunnel_group")).trim(), enabled: data.get("enabled") === "on"
     };
   }
   async function monitorRoutePublication(id) {
-    const terminalErrors = new Set(["conflict", "bind_error", "invalid", "tcp_edge_disabled"]);
+    const terminalErrors = new Set(["conflict", "bind_error", "invalid", "tcp_edge_disabled", "udp_edge_disabled", "web_port_edge_disabled"]);
     for (let attempt = 0; attempt < 90 && state.token; attempt += 1) {
       const route = await request(`/routes/${encodeURIComponent(id)}`);
       const index = state.routes.findIndex(item => item.id === route.id);

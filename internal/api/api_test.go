@@ -225,7 +225,7 @@ func TestTCPRouteRequiresEnabledEdgeAndNonReservedPort(t *testing.T) {
 
 	enabled := New(s, Config{
 		AdminToken: "admin-secret", TCPEnabled: true,
-		TCPPortReserved: func(int) bool { return false },
+		TCPPortReserved:   func(int) bool { return false },
 		RoutePublicStatus: func(domain.Route) string { return "waiting_agent" },
 	})
 	response = performJSON(t, enabled, http.MethodPost, "/api/v1/routes", payload, "admin-secret")

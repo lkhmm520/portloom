@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# NAS PATH quirks: Synology keeps docker in /usr/local/bin, QNAP Container
+# Station and Entware use /share/CACHEDEV*/... symlinked via /usr/local and
+# /opt. Appending (not prepending) keeps caller-provided overrides first.
+PATH="$PATH:/usr/local/bin:/usr/local/sbin:/opt/bin:/opt/sbin"
 usage() { cat <<'EOF'
 Install PortLoom Agent on the internal Docker host (NAS/home server).
 
@@ -10,7 +14,31 @@ Options:
   --version TAG     PortLoom image tag (default: latest)
 EOF
 }
-progress() { printf '[%s/%s] %s\n' "$1" "$2" "$3"; }
+total_steps=8
+current_step_label='checking arguments'
+install_success=false
+lock_dir=''
+color() { if [ -t 1 ]; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi }
+progress() {
+  current_step_label=$3
+  local filled=$1 total=$2 bar='' i
+  for ((i = 1; i <= total; i++)); do
+    if [ "$i" -le "$filled" ]; then bar="${bar}#"; else bar="${bar}-"; fi
+  done
+  printf '%s [%s/%s] %s\n' "$(color '1;32' "[$bar]")" "$1" "$2" "$3"
+}
+on_exit() {
+  local status=$?
+  if [ -n "$lock_dir" ]; then rmdir "$lock_dir" 2>/dev/null || true; fi
+  if [ "$status" -ne 0 ] && [ "$install_success" != true ]; then
+    {
+      printf '\n%s Agent installation FAILED at: %s (exit %s)\n' "$(color '1;31' '✗')" "$current_step_label" "$status"
+      printf '安装失败（步骤：%s）。请根据上方错误信息修复后，重新执行同一条安装命令即可安全续装。\n' "$current_step_label"
+      printf 'Fix the error above and rerun the exact same install command; reruns resume safely.\n'
+    } >&2
+  fi
+}
+trap on_exit EXIT
 resolve_flock() {
   local candidate
   candidate=$(command -v flock 2>/dev/null || true)
@@ -19,6 +47,17 @@ resolve_flock() {
     if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
   done
   return 1
+}
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum | cut -d ' ' -f 1
+  elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f 1
+  else printf '%s' "$1" | openssl dgst -sha256 -r | cut -d ' ' -f 1
+  fi
+}
+random_hex32() {
+  if [ -r /proc/sys/kernel/random/uuid ]; then tr -d '-' < /proc/sys/kernel/random/uuid
+  else od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+  fi
 }
 server_url=""; name=""; token=""; ssh_host=""; ssh_port=""; ssh_host_key=""; home="${PORTLOOM_HOME:-$HOME/.portloom/agent}"; version=latest
 while [ "$#" -gt 0 ]; do
@@ -58,14 +97,46 @@ if [ -z "$home" ] || has_control "$home"; then
 fi
 [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo 'invalid --version' >&2; exit 2; }
 progress 1 8 'Checking host prerequisites'
-command -v docker >/dev/null || { echo 'Docker is required' >&2; exit 1; }
-docker compose version >/dev/null 2>&1 || { echo 'Docker Compose v2 is required' >&2; exit 1; }
-command -v sha256sum >/dev/null || { echo 'sha256sum is required' >&2; exit 1; }
-flock_bin=$(resolve_flock) || {
-  echo 'flock is required to serialize Agent installation' >&2
-  echo 'QNAP/Entware: run /opt/bin/opkg install flock, then rerun this command.' >&2
+command -v docker >/dev/null || {
+  echo 'Docker is required but was not found in PATH.' >&2
+  echo '未找到 docker 命令。Synology 请安装 Container Manager；QNAP 请安装 Container Station；其他系统请先安装 Docker Engine。' >&2
   exit 1
 }
+if [ "${PORTLOOM_SKIP_DAEMON_CHECK:-false}" != true ] && ! docker info >/dev/null 2>&1; then
+  echo 'Docker is installed but the daemon is not reachable for this user.' >&2
+  echo 'Docker 已安装但当前用户无法访问守护进程。请确认 Docker 服务已启动，并将当前用户加入 docker 组（或改用 root/管理员执行）。' >&2
+  echo "Try: sudo usermod -aG docker $(id -un 2>/dev/null || echo '<user>') && re-login, or rerun with sudo." >&2
+  exit 1
+fi
+compose_style=''
+if docker compose version >/dev/null 2>&1; then
+  compose_style=plugin
+elif command -v docker-compose >/dev/null 2>&1; then
+  standalone_version=$(docker-compose version --short 2>/dev/null || true)
+  case "$standalone_version" in
+    2*|v2*) compose_style=standalone; echo "Using standalone docker-compose $standalone_version (compose plugin not found).";;
+    *)
+      echo "docker-compose $standalone_version is too old; Compose v2 is required." >&2
+      echo '检测到旧版 docker-compose（v1）。请升级到 Compose v2：Synology 升级 Container Manager；QNAP 升级 Container Station 3；其他系统安装 docker-compose-plugin。' >&2
+      exit 1;;
+  esac
+else
+  echo 'Docker Compose v2 is required (neither "docker compose" nor docker-compose v2 was found).' >&2
+  echo '未找到 Docker Compose v2。Synology 请升级 Container Manager；QNAP 请升级 Container Station 3；其他系统请安装 docker-compose-plugin。' >&2
+  exit 1
+fi
+run_compose() {
+  if [ "$compose_style" = plugin ]; then docker compose "$@"; else command docker-compose "$@" 9>&-; fi
+}
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1 || {
+  echo 'sha256sum, shasum, or openssl is required to fingerprint the SSH host key.' >&2
+  echo '需要 sha256sum、shasum 或 openssl 之一（几乎所有 NAS 都自带其中一个）。' >&2
+  exit 1
+}
+if ! flock_bin=$(resolve_flock); then
+  flock_bin=''
+  echo 'flock not found; falling back to a directory lock (QNAP/Entware can install it with: /opt/bin/opkg install flock).'
+fi
 ready_attempts=${PORTLOOM_READY_ATTEMPTS:-60}
 [[ "$ready_attempts" =~ ^[0-9]+$ ]] && [ "$ready_attempts" -ge 1 ] && [ "$ready_attempts" -le 600 ] || { echo 'PORTLOOM_READY_ATTEMPTS must be within 1..600' >&2; exit 2; }
 umask 077
@@ -80,7 +151,17 @@ home=$(cd "$home" && pwd -L)
 chmod 0711 "$home"
 exec 9>"$home/.install.lock"
 chmod 0600 "$home/.install.lock"
-"$flock_bin" -n 9 || { echo "another Agent installation is already running in $home" >&2; exit 1; }
+if [ -n "$flock_bin" ]; then
+  "$flock_bin" -n 9 || { echo "another Agent installation is already running in $home" >&2; exit 1; }
+else
+  # Portable fallback: mkdir is atomic on every NAS filesystem.
+  if ! mkdir "$home/.install.lock.d" 2>/dev/null; then
+    echo "another Agent installation is already running in $home" >&2
+    echo "若确认没有其他安装在运行（例如上次安装被强制中断），删除目录 $home/.install.lock.d 后重试。" >&2
+    exit 1
+  fi
+  lock_dir="$home/.install.lock.d"
+fi
 # Prevent long-running Docker children from keeping the installer lock after this shell exits.
 docker() { command docker "$@" 9>&-; }
 docker_run() { docker run --pull=never "$@"; }
@@ -123,9 +204,8 @@ wait_ready() {
 }
 rotate_ready_nonce() {
   local tmp_env="$home/.env.next" uuid generation
-  [ -r /proc/sys/kernel/random/uuid ] || { echo 'kernel UUID source is required for readiness generation IDs' >&2; exit 1; }
-  uuid=$(tr -d '-' < /proc/sys/kernel/random/uuid)
-  [[ "$uuid" =~ ^[0-9a-f]{32}$ ]] || { echo 'failed to generate readiness ID' >&2; exit 1; }
+  uuid=$(random_hex32)
+  [[ "$uuid" =~ ^[0-9a-f]{32}$ ]] || { echo 'failed to generate readiness ID (no kernel UUID source or usable /dev/urandom)' >&2; exit 1; }
   generation=$(env_value TM_MANAGED_SSH_READY_GENERATION || true)
   [[ "$generation" =~ ^[0-9]+$ ]] || generation=0
   [ "$generation" -lt 9223372036854775807 ] || { echo 'readiness generation exhausted' >&2; exit 1; }
@@ -175,7 +255,7 @@ EOF
   mv "$home/compose.yml.next" "$home/compose.yml"
 }
 host_label="$ssh_host"; [ "$ssh_port" = 22 ] || host_label="[$ssh_host]:$ssh_port"
-host_key_sha256=$(printf '%s' "$ssh_host_key" | sha256sum | cut -d ' ' -f 1)
+host_key_sha256=$(sha256_of "$ssh_host_key")
 if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   progress 3 8 'Validating the existing Agent identity'
   [ -f "$home/.env" ] || { echo 'existing Agent compose.yml has no .env; manual recovery is required' >&2; exit 1; }
@@ -222,7 +302,7 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   rotate_ready_nonce
   remove_ready "$recovery_image"
   progress 5 8 'Restarting the existing Agent'
-  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" run_compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
   progress 6 8 'Waiting for managed SSH and initial synchronization'
   if ! wait_ready "$recovery_image" "$ready_nonce"; then
     echo "Existing Agent was not ready after $ready_attempts attempts; fix connectivity and rerun the same command" >&2
@@ -232,13 +312,15 @@ if [ -f "$home/.env" ] || [ -f "$home/compose.yml" ]; then
   scrub_enrollment_token
   rotate_ready_nonce
   remove_ready "$recovery_image"
-  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+  (cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$recovery_image" run_compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
   progress 8 8 'Verifying token-free restart and heartbeat'
   if ! wait_ready "$recovery_image" "$ready_nonce"; then
     echo 'Agent credentials were recovered, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
     exit 1
   fi
-  printf '\nPortLoom Agent recovery completed for %s.\nFiles: %s\n' "$name" "$home"
+  install_success=true
+  printf '\n%s PortLoom Agent recovery completed for %s.\n' "$(color '1;32' '✓')" "$name"
+  printf '恢复完成：Agent %s 已重新连接。配置目录：%s\n' "$name" "$home"
   exit 0
 fi
 progress 3 8 'Pulling and pinning the Agent image'
@@ -279,7 +361,7 @@ write_agent_compose
 rotate_ready_nonce
 remove_ready "$image"
 progress 5 8 'Starting Agent and enrolling'
-(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --pull never) 9>&-
+(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" run_compose --env-file .env -f compose.yml up -d --pull never) 9>&-
 progress 6 8 'Waiting for managed SSH and initial synchronization'
 if ! wait_ready "$image" "$ready_nonce"; then
   echo "Agent was not ready after $ready_attempts attempts; its consumed credentials were saved and rerunning the same command will resume safely" >&2
@@ -289,10 +371,13 @@ progress 7 8 'Removing the one-time enrollment credential'
 scrub_enrollment_token
 rotate_ready_nonce
 remove_ready "$image"
-(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" docker compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
+(cd "$home" && PORTLOOM_AGENT_IMAGE_ID="$image" run_compose --env-file .env -f compose.yml up -d --force-recreate --pull never) 9>&-
 progress 8 8 'Verifying token-free restart'
 if ! wait_ready "$image" "$ready_nonce"; then
   echo 'Agent enrolled, but SSH did not recover after removing the enrollment token; rerun after fixing connectivity' >&2
   exit 1
 fi
-printf '\nPortLoom Agent is installed and enrolled as %s.\nOpen the Server WebUI to add routes.\nFiles: %s\n' "$name" "$home"
+install_success=true
+printf '\n%s PortLoom Agent is installed and enrolled as %s.\n' "$(color '1;32' '✓')" "$name"
+printf '安装成功：Agent %s 已注册并连上服务器。现在到 WebUI 的 Routes 页面添加路由即可。\n' "$name"
+printf 'Open the Server WebUI to add routes. Files: %s\n' "$home"

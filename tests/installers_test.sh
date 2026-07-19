@@ -78,6 +78,7 @@ fi
 printf '%q ' "$@" >> "${FAKE_DOCKER_LOG:?}"
 printf '\n' >> "$FAKE_DOCKER_LOG"
 if [ -n "${FAKE_FAIL_DOCKER_MATCH:-}" ] && [[ " $* " == *"$FAKE_FAIL_DOCKER_MATCH"* ]]; then echo 'injected docker failure' >&2; exit 43; fi
+if [ "${1:-}" = info ]; then exit 0; fi
 if [ "${1:-}" = compose ] && [ "${2:-}" = version ]; then exit 0; fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   image=${@: -1}

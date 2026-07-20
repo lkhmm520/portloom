@@ -4,7 +4,7 @@ const docsBase = process.env.DOCS_BASE || '/'
 
 const zhSidebar: DefaultTheme.SidebarItem[] = [
   { text: '开始使用', items: [
-    { text: '五分钟快速开始', link: '/guide/quick-start' }, { text: '认识 PortLoom', link: '/guide/what-is-portloom' }, { text: '核心概念', link: '/guide/concepts' }
+    { text: '五分钟快速开始', link: '/guide/quick-start' }, { text: 'Compose 模板安装', link: '/guide/compose-install' }, { text: '认识 PortLoom', link: '/guide/what-is-portloom' }, { text: '核心概念', link: '/guide/concepts' }
   ]},
   { text: '安装部署', items: [
     { text: 'Docker 安装', link: '/install/docker' }, { text: '生产环境部署', link: '/install/production' }, { text: '反向代理接入', link: '/install/reverse-proxy' }
@@ -22,7 +22,7 @@ const zhSidebar: DefaultTheme.SidebarItem[] = [
 
 const enSidebar: DefaultTheme.SidebarItem[] = [
   { text: 'Getting started', items: [
-    { text: 'Five-minute quick start', link: '/en/guide/quick-start' }, { text: 'What is PortLoom?', link: '/en/guide/what-is-portloom' }, { text: 'Core concepts', link: '/en/guide/concepts' }
+    { text: 'Five-minute quick start', link: '/en/guide/quick-start' }, { text: 'Compose template install', link: '/en/guide/compose-install' }, { text: 'What is PortLoom?', link: '/en/guide/what-is-portloom' }, { text: 'Core concepts', link: '/en/guide/concepts' }
   ]},
   { text: 'Installation', items: [
     { text: 'Install with Docker', link: '/en/install/docker' }, { text: 'Production deployment', link: '/en/install/production' }, { text: 'Reverse proxy integration', link: '/en/install/reverse-proxy' }
@@ -47,7 +47,7 @@ const zhTheme: DefaultTheme.Config = {
   ...shared,
   nav: [
     { text: '开始安装', link: '/guide/quick-start' }, { text: '运维', link: '/operations/security' },
-    { text: '参考', link: '/reference/configuration' }, { text: '控制台', link: 'https://portloom.961121.xyz' }
+    { text: '参考', link: '/reference/configuration' }
   ],
   sidebar: zhSidebar,
   search: { provider: 'local', options: { translations: {
@@ -64,7 +64,7 @@ const enTheme: DefaultTheme.Config = {
   ...shared,
   nav: [
     { text: 'Install', link: '/en/guide/quick-start' }, { text: 'Operations', link: '/en/operations/security' },
-    { text: 'Reference', link: '/en/reference/configuration' }, { text: 'Console', link: 'https://portloom.961121.xyz' }
+    { text: 'Reference', link: '/en/reference/configuration' }
   ],
   sidebar: enSidebar,
   search: { provider: 'local' },

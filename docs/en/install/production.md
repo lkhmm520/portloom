@@ -28,7 +28,7 @@ Empty route `Public port` means the primary edge, not fixed 80/443. Keep it empt
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com --version 0.4.0
+./install-server.sh --domain example.com --version 0.4.1
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
 docker compose --env-file .env -f compose.yml ps
@@ -56,7 +56,7 @@ compose.yml
 
 ## Acceptance
 
-1. `/api/v1/system` reports `0.4.0` and expected `tcp_edge`, `udp_edge`, and `web_port_edge`.
+1. `/api/v1/system` reports `0.4.1` and expected `tcp_edge`, `udp_edge`, and `web_port_edge`.
 2. HTTPS administration and HTTP 308 redirect work.
 3. Agent restarts and heartbeats after the one-time token is removed.
 4. Test HTTPS, HTTP, TCP, UDP, plus one path/custom-port route.

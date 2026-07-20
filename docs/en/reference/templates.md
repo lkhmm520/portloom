@@ -2,16 +2,22 @@
 
 Only this explicit public allowlist is copied during a docs build. Real `.env` files, keys, and runtime data never enter the documentation site.
 
+<DownloadCard title="Beginner Server compose.yml" description="Recommended: copy the env template, edit two values, and start" file="compose.yml" />
+<DownloadCard title="Beginner Server .env template" description="Rename to .env after downloading" file="compose.env.example" />
 <DownloadCard title="Server Compose" description="Run the published Server image" file="docker-compose.server.yml" />
 <DownloadCard title="Server environment" description="Copy to server.env and edit" file="server.env.example" />
-<DownloadCard title="Single Agent Compose" description="Standard NAS deployment" file="docker-compose.agent.yml" />
-<DownloadCard title="Agent environment" description="Copy to agent.env and edit" file="agent.env.example" />
-<DownloadCard title="Dual Agent Compose" description="Independent Web and media SSH masters" file="docker-compose.dual-agent.yml" />
+<DownloadCard title="Advanced: single Agent Compose" description="Manual recovery/expert use; new installs should use the WebUI command" file="docker-compose.agent.yml" />
+<DownloadCard title="Advanced: Agent environment" description="Copy to agent.env for manual recovery" file="agent.env.example" />
+<DownloadCard title="Advanced: dual Agent Compose" description="Independent Web and media SSH masters" file="docker-compose.dual-agent.yml" />
 <DownloadCard title="Web Agent environment" description="Copy to agent-web.env" file="agent-web.env.example" />
 <DownloadCard title="Media Agent environment" description="Copy to agent-media.env" file="agent-media.env.example" />
 <DownloadCard title="Restricted sshd block" description="Deny shells and permit loopback reverse forwards only" file="sshd_config.portloom.conf" />
 
 ::: warning
+Beginners should use `compose.yml` and `compose.env.example` from [Compose template installation](/en/guide/compose-install). The commands below apply to the advanced split templates.
+
+For a new Agent, always copy its dedicated command from **Add Agent** in the WebUI. Do not transcribe the one-time token or establish trust with an ad-hoc `ssh-keyscan`. The generated command pins this Server's SSH host key and removes the one-time token after enrollment. Agent templates are for expert deployments or manual recovery with a complete identity backup.
+
 Replace every `change-me` value. A service-level Compose `env_file` does not participate in YAML interpolation, so pass the matching environment file explicitly:
 
 ```bash

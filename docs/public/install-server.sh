@@ -4,8 +4,8 @@ set -euo pipefail
 usage() { cat <<'EOF'
 Install a self-contained PortLoom Server on a public Docker host.
 
-Usage: install-server.sh --domain portloom.example.com [options]
-  --domain NAME       DNS name already pointing to this public host (required)
+Usage: install-server.sh --domain example.com [options]
+  --domain NAME       WebUI DNS hostname pointing here; no scheme, port, or path (required)
   --home PATH         Install directory (default: ~/.portloom/server)
   --web-port PORT     Loopback management port (default: 8080)
   --ssh-port PORT     Public managed SSH tunnel port (default: 2222)

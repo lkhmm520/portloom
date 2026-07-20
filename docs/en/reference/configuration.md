@@ -37,7 +37,7 @@ The stream edge is enabled by default. It cannot use control/Gateway/TLS-ask, pr
 | `--domain` | required management hostname |
 | `--web-port` / `--ssh-port` | internal administration / public managed-SSH port |
 | `--http-port` / `--https-port` | local primary edges; public 80 must still forward to HTTP |
-| `--version` | pinned image tag; use an exact version such as `0.4.0` in production |
+| `--version` | pinned image tag; use an exact version such as `0.4.1` in production |
 | `--disable-tcp-edge` | write `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | compatibility flag; v0.4 is enabled by default |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | use with `--enable-tcp-edge` to override the bind IP before first install |

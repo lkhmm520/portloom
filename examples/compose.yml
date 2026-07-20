@@ -1,16 +1,17 @@
 name: portloom-server
+
 services:
   state-init:
-    image: ${PORTLOOM_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:latest}
+    image: ghcr.io/lkhmm520/portloom-sshd:0.4.1
     user: "0:0"
     network_mode: none
     entrypoint: [/bin/sh, -c]
     command:
       - set -eu; umask 077; chown 0:0 /data /auth /hostkeys; mkdir -p /data/certs; chown 0:0 /data/certs; if [ -e /auth/authorized_keys ]; then chown 0:0 /auth/authorized_keys; fi; touch /auth/authorized_keys; chmod 0700 /data /data/certs /auth; chmod 0755 /hostkeys; chmod 0600 /auth/authorized_keys; chown -R 65532:65532 /data /auth
     volumes:
-      - ${TM_SERVER_DATA_DIR:-./data/server}:/data
-      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/auth
-      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/hostkeys
+      - ./data/server:/data
+      - ./data/ssh-auth:/auth
+      - ./data/ssh-hostkeys:/hostkeys
     read_only: true
     tmpfs:
       - /tmp:size=1m,mode=1777
@@ -18,8 +19,9 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN]
     restart: "no"
+
   sshd:
-    image: ${PORTLOOM_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:latest}
+    image: ghcr.io/lkhmm520/portloom-sshd:0.4.1
     container_name: portloom-sshd
     restart: unless-stopped
     network_mode: host
@@ -28,8 +30,8 @@ services:
     environment:
       PORTLOOM_SSH_PORT: ${TM_MANAGED_SSH_PORT:-2222}
     volumes:
-      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/hostkeys
-      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/auth:ro
+      - ./data/ssh-hostkeys:/hostkeys
+      - ./data/ssh-auth:/auth:ro
     read_only: true
     tmpfs:
       - /run:size=8m,mode=0755
@@ -37,41 +39,42 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     cap_add: [SETUID, SETGID, SYS_CHROOT]
+
   server:
-    image: ${PORTLOOM_SERVER_IMAGE:-ghcr.io/lkhmm520/portloom-server:latest}
+    image: ghcr.io/lkhmm520/portloom-server:0.4.1
     container_name: portloom-server
     restart: unless-stopped
     network_mode: host
     depends_on:
       sshd: { condition: service_healthy }
-    env_file: [server.env]
+    env_file: [.env]
     environment:
       TM_LISTEN_ADDR: ${TM_LISTEN_ADDR:-127.0.0.1:8080}
       TM_HEALTHCHECK_URL: ${TM_HEALTHCHECK_URL:-http://127.0.0.1:8080/healthz}
       TM_GATEWAY_ADDR: ${TM_GATEWAY_ADDR:-127.0.0.1:8081}
       TM_DATABASE_PATH: /data/portloom.db
       TM_WEB_DIR: /app/web
-      TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN:?set TM_ADMIN_TOKEN in server.env}
+      TM_ADMIN_TOKEN: ${TM_ADMIN_TOKEN:?set TM_ADMIN_TOKEN in .env}
       TM_AUTHORIZED_KEYS_PATH: /ssh-auth/authorized_keys
       TM_SSH_HOST_PUBLIC_KEY_PATH: /ssh-hostkeys/ssh_host_ed25519_key.pub
       TM_MANAGED_SSH_PORT: ${TM_MANAGED_SSH_PORT:-2222}
       TM_MANAGED_SSH_ISOLATED: ${TM_MANAGED_SSH_ISOLATED:-true}
-      TM_PUBLIC_HOST: ${TM_PUBLIC_HOST:-}
+      TM_PUBLIC_HOST: ${TM_PUBLIC_HOST:?set TM_PUBLIC_HOST in .env}
       TM_TLS_ASK_TOKEN: ${TM_TLS_ASK_TOKEN:-}
       TM_TLS_ASK_ADDR: ${TM_TLS_ASK_ADDR:-127.0.0.1:8082}
-      TM_EDGE_HTTP_ADDR: ${TM_EDGE_HTTP_ADDR:-}
-      TM_EDGE_HTTPS_ADDR: ${TM_EDGE_HTTPS_ADDR:-}
-      TM_TCP_EDGE_BIND_HOST: ${TM_TCP_EDGE_BIND_HOST:-}
-      TM_TLS_CACHE_DIR: ${TM_TLS_CACHE_DIR:-/data/certs}
+      TM_EDGE_HTTP_ADDR: ${TM_EDGE_HTTP_ADDR:-:80}
+      TM_EDGE_HTTPS_ADDR: ${TM_EDGE_HTTPS_ADDR:-:443}
+      TM_TCP_EDGE_BIND_HOST: ${TM_TCP_EDGE_BIND_HOST:-0.0.0.0}
+      TM_TLS_CACHE_DIR: /data/certs
       TM_ACME_EMAIL: ${TM_ACME_EMAIL:-}
     volumes:
-      - ${TM_SERVER_DATA_DIR:-./data/server}:/data
-      - ${TM_SSH_AUTH_DIR:-./data/ssh-auth}:/ssh-auth
-      - ${TM_SSH_HOSTKEYS_DIR:-./data/ssh-hostkeys}:/ssh-hostkeys:ro
+      - ./data/server:/data
+      - ./data/ssh-auth:/ssh-auth
+      - ./data/ssh-hostkeys:/ssh-hostkeys:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
     cap_drop: [ALL]
-    # Server is non-root. Keep NNP disabled so its cap_net_bind_service file
-    # capability can take effect, and add only the matching bounding capability.
+    # PortLoom runs as non-root and receives only the capability required to
+    # bind the built-in HTTP/HTTPS edge on ports 80 and 443.
     cap_add: [NET_BIND_SERVICE]

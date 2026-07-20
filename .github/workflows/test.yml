@@ -58,14 +58,19 @@ jobs:
           docker compose --env-file .env.example -f deploy/agent/docker-compose.yml config --quiet
           docker compose -f deploy/docs/docker-compose.yml config --quiet
           cp examples/server.env.example examples/server.env
+          cp examples/compose.env.example examples/.env
           cp examples/agent.env.example examples/agent.env
           cp examples/agent-web.env.example examples/agent-web.env
           cp examples/agent-media.env.example examples/agent-media.env
           docker compose --env-file examples/server.env -f examples/docker-compose.server.yml config --quiet
+          TM_PUBLIC_HOST=docs-test.example TM_ADMIN_TOKEN=ci-only-placeholder-token \
+            docker compose --project-directory examples -f examples/compose.yml config --quiet
           docker compose --env-file examples/agent.env -f examples/docker-compose.agent.yml config --quiet
           docker compose -f examples/docker-compose.dual-agent.yml config --quiet
       - name: Verify release workflow contracts
         run: python3 tests/release_workflows_test.py
+      - name: Verify beginner documentation onboarding contracts
+        run: python3 tests/docs_onboarding_test.py
       - name: Build Server image
         run: docker build --build-arg VERSION="${GITHUB_SHA::12}" --build-arg COMMIT="${GITHUB_SHA}" --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -f Dockerfile.server -t portloom-server:test .
       - name: Build Agent image
@@ -82,6 +87,14 @@ jobs:
           PORTLOOM_TEST_SSHD_IMAGE: portloom-sshd:test
           PORTLOOM_HOST_WORKSPACE: ${{ github.workspace }}
         run: ./tests/server_compose_cold_start_test.sh
+      - name: Verify beginner Compose first start and repeat lifecycle
+        env:
+          PORTLOOM_TEST_SERVER_IMAGE: portloom-server:test
+          PORTLOOM_TEST_SSHD_IMAGE: portloom-sshd:test
+          PORTLOOM_HOST_WORKSPACE: ${{ github.workspace }}
+        run: |
+          ./tests/beginner_compose_conflict_guard_test.sh
+          ./tests/beginner_compose_lifecycle_test.sh
       - name: Verify generated Server and Agent installer Compose end to end
         env:
           PORTLOOM_TEST_SERVER_IMAGE: portloom-server:test

@@ -37,7 +37,7 @@ stream edge 默认开启。其端口不能占用管理/Gateway/TLS ask、主 edg
 | `--domain` | 必填管理域名 |
 | `--web-port` / `--ssh-port` | 内部管理端口 / 公网受管 SSH 端口 |
 | `--http-port` / `--https-port` | 本机主 edge 端口；公网 80 仍须转发到 HTTP 端口 |
-| `--version` | 固定镜像 Tag；生产建议 `0.4.0` 等精确版本 |
+| `--version` | 固定镜像 Tag；生产建议 `0.4.1` 等精确版本 |
 | `--disable-tcp-edge` | 写入 `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | 兼容参数；v0.4 默认已启用 |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | 与 `--enable-tcp-edge` 同时使用，在首次安装前覆盖 bind IP |

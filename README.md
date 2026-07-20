@@ -51,23 +51,18 @@ TCP/UDP 客户端 ──────> PortLoom stream edge ───────
 ### 准备
 
 - 公网 VPS 与 NAS/内网主机均可访问 Docker daemon，并使用 Compose v2；
-- 管理域名（例如 `portloom.example.com`）已解析到 VPS；
+- 你自己选定的完整管理域名已解析到 VPS；根域名或任意子域名都可以，不要求 `portloom.` 前缀；
 - VPS 放行 TCP `80`、`443`、`2222`，且 `80/443` 未被占用；NAS 无需开放入站端口。
 
 ### 1. 在公网主机安装 Server
 
-```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
-less install-server.sh
-chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com --version 0.4.0
-```
+推荐直接使用[标准 `compose.yml` 模板](https://docs.961121.xyz/guide/compose-install)：下载 `compose.yml` 与 `.env` 模板，只修改管理域名和管理员 Token，然后在 Compose 图形界面启动或执行 `docker compose up -d`。不要求先运行 PortLoom 安装脚本。
 
-安装器只启动 `portloom-server` 与 `portloom-sshd`。Server 通过最小化的 `NET_BIND_SERVICE` capability 直接绑定 80/443，最后输出 WebUI 地址与随机管理员令牌。
+如希望自动生成随机凭证、固定不可变镜像并执行 HTTPS readiness/失败回滚，也可选择[安全安装脚本](https://docs.961121.xyz/install/docker#方式二-安全安装脚本)。
 
 ### 2. 在 WebUI 添加 Agent
 
-打开 `https://portloom.example.com` 并登录。进入 **Add Agent**，填写 Agent 名称、Server URL、公网 Server 主机和 SSH 端口，然后点击 **Generate command**。
+打开 `https://你的管理域名` 并登录。进入 **Add Agent**，填写 Agent 名称、Server URL、公网 Server 主机和 SSH 端口，然后点击 **Generate command**。
 
 ### 3. 在 NAS 执行一条命令
 
@@ -88,7 +83,7 @@ chmod 0700 install-server.sh
 
 如未配置通配符 DNS，请把该业务域名另行解析到 VPS。保存后等待 Local、Tunnel 与 Public 状态收敛，再访问 `https://jellyfin.example.com`。
 
-详细步骤见[五分钟快速开始](https://docs.961121.xyz/guide/quick-start)与[Docker 安装](https://docs.961121.xyz/install/docker)。
+详细步骤见[Compose 模板安装](https://docs.961121.xyz/guide/compose-install)、[五分钟快速开始](https://docs.961121.xyz/guide/quick-start)与[Docker 安装](https://docs.961121.xyz/install/docker)。
 
 ## 进阶可选集成
 

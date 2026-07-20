@@ -26,9 +26,9 @@ The first v0.4 start adds route fields/indexes and converts early legacy `http` 
 Installer `native-upgrade-backup-*` directories contain only `.env` and `compose.yml`; they **do not back up the database**. A v0.3.x rollback must restore a consistent pre-v0.4 `server-data/` snapshot as well as old images.
 :::
 
-## v0.3.x → v0.4.0 requires a maintenance window
+## v0.3.x → v0.4.x requires a maintenance window
 
-Current `install-agent.sh` supports same-version continuation/recovery only and fails closed when an existing home receives another `--version`. The WebUI also locks Client ownership while editing a route. Therefore v0.4.0 has **no installer-managed, one-command, zero-downtime Agent cross-version upgrade**. Do not upgrade Server first and leave old Agents running for long; do not delete `agent.json` or keys or guess immutable image IDs.
+Current `install-agent.sh` supports same-version continuation/recovery only and fails closed when an existing home receives another `--version`. The WebUI also locks Client ownership while editing a route. Therefore v0.4.x has **no installer-managed, one-command, zero-downtime Agent cross-version upgrade**. Do not upgrade Server first and leave old Agents running for long; do not delete `agent.json` or keys or guess immutable image IDs.
 
 The conservative procedure below causes a short interruption. Commands assume the default Agent home; replace it with the real absolute path for custom homes:
 
@@ -54,7 +54,7 @@ Download the current installer, repeat original options, and pin the new release
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com --version 0.4.0
+./install-server.sh --domain example.com --version 0.4.1
 ```
 
 A non-default install must repeat every original value. Gateway has no CLI flag and uses an environment variable:
@@ -62,16 +62,16 @@ A non-default install must repeat every original value. Gateway has no CLI flag 
 ```bash
 PORTLOOM_GATEWAY_PORT=<original-gateway-port> \
 ./install-server.sh \
-  --domain portloom.example.com \
+  --domain example.com \
   --home <original-install-directory> \
   --web-port <original-web-port> \
   --ssh-port <original-ssh-port> \
   --http-port <original-http-edge-port> \
   --https-port <original-https-edge-port> \
-  --version 0.4.0
+  --version 0.4.1
 ```
 
-The installer resolves and persists immutable image IDs, writes candidate configuration, creates `native-upgrade-backup-0.4.0/`, runs Compose `up -d`, and requests the real HTTPS `/healthz`. Failure restores previous configuration and image IDs. An existing backup directory with the same name blocks another attempt.
+The installer resolves and persists immutable image IDs, writes candidate configuration, creates `native-upgrade-backup-0.4.1/`, runs Compose `up -d`, and requests the real HTTPS `/healthz`. Failure restores previous configuration and image IDs. An existing backup directory with the same name blocks another attempt.
 
 On the first migration from a v0.3 install with no stream-edge value, `--disable-tcp-edge` may write `off`. A non-empty value in an existing `.env` is preserved, so later rerun flags are not a general toggle; back up and review the installed `.env`/Compose before changing it. When stream edge is enabled, allow only actual route ports—not a broad range.
 
@@ -81,17 +81,17 @@ After upgrade:
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml ps
 docker compose --env-file .env -f compose.yml logs --tail=200 server
-curl -I https://portloom.example.com/healthz
+curl -I https://example.com/healthz
 ```
 
-Confirm old web rows appear as HTTPS after migration, `/api/v1/system` reports 0.4.0, Dashboard metrics render, and test true plaintext HTTP, HTTPS, TCP, UDP, path, and extra-port routes.
+Confirm old web rows appear as HTTPS after migration, `/api/v1/system` reports 0.4.1, Dashboard metrics render, and test true plaintext HTTP, HTTPS, TCP, UDP, path, and extra-port routes.
 
 ## Migrating a v0.2.x Caddy install
 
 ```bash
 ./install-server.sh \
-  --domain portloom.example.com \
-  --version 0.4.0 \
+  --domain example.com \
+  --version 0.4.1 \
   --migrate-native-edge
 ```
 
@@ -101,7 +101,7 @@ Repeat the original hostname and all original ports. Back up Caddy volumes, comp
 
 Preserve a failed-state copy before any rollback, then stop current Compose. Never erase `server-data`, `ssh-hostkeys`, `ssh-auth`, or Agent data.
 
-- **v0.4 → v0.3.x:** restore `.env` and `compose.yml` from `native-upgrade-backup-0.4.0/` and a consistent pre-upgrade `server-data/`. Pass the recorded immutable IDs through both the v0.3 `PORTLOOM_*_IMAGE` contract and the v0.4 `PORTLOOM_*_IMAGE_ID` contract so a locally moved tag cannot be selected:
+- **v0.4 → v0.3.x:** restore `.env` and `compose.yml` from `native-upgrade-backup-0.4.1/` and a consistent pre-upgrade `server-data/`. Pass the recorded immutable IDs through both the v0.3 `PORTLOOM_*_IMAGE` contract and the v0.4 `PORTLOOM_*_IMAGE_ID` contract so a locally moved tag cannot be selected:
 
   ```bash
   OLD_SERVER_IMAGE_ID=sha256:replace-with-recorded-server-id

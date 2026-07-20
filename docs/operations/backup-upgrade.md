@@ -26,9 +26,9 @@ v0.4 首次启动会增加路由字段/索引，并把早期版本的 legacy `ht
 安装器的 `native-upgrade-backup-*` 只保存 `.env` 与 `compose.yml`，**不会备份数据库**。回滚到 v0.3.x 必须同时恢复 v0.4 首次启动前的一致 `server-data/`，不能只换旧镜像。
 :::
 
-## v0.3.x → v0.4.0：需要维护窗口
+## v0.3.x → v0.4.x：需要维护窗口
 
-当前 `install-agent.sh` 只支持同版本续装/恢复，已有安装目录传入不同 `--version` 会 fail closed；WebUI 编辑路由时也锁定 Client。因此 v0.4.0 **没有安装器管理的一键、零停机 Agent 跨版本升级路径**。不要先升级 Server 再让旧 Agent 长时间运行，也不要删除 `agent.json`、私钥或盲改不可变镜像 ID。
+当前 `install-agent.sh` 只支持同版本续装/恢复，已有安装目录传入不同 `--version` 会 fail closed；WebUI 编辑路由时也锁定 Client。因此 v0.4.x **没有安装器管理的一键、零停机 Agent 跨版本升级路径**。不要先升级 Server 再让旧 Agent 长时间运行，也不要删除 `agent.json`、私钥或盲改不可变镜像 ID。
 
 当前保守流程会产生短暂中断。以下命令假定 Agent 使用默认 home；自定义 home 必须替换为真实完整路径：
 
@@ -54,7 +54,7 @@ v0.4 首次启动会增加路由字段/索引，并把早期版本的 legacy `ht
 ```bash
 curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com --version 0.4.0
+./install-server.sh --domain example.com --version 0.4.1
 ```
 
 非默认安装必须带回全部原配置；Gateway 没有 CLI 参数，需使用环境变量：
@@ -62,16 +62,16 @@ chmod 0700 install-server.sh
 ```bash
 PORTLOOM_GATEWAY_PORT=<原Gateway端口> \
 ./install-server.sh \
-  --domain portloom.example.com \
+  --domain example.com \
   --home <原安装目录> \
   --web-port <原Web端口> \
   --ssh-port <原SSH端口> \
   --http-port <原HTTP-edge端口> \
   --https-port <原HTTPS-edge端口> \
-  --version 0.4.0
+  --version 0.4.1
 ```
 
-安装器会解析并持久化不可变镜像 ID、生成候选配置、创建 `native-upgrade-backup-0.4.0/` 配置备份、用 Compose `up -d` 更新，并实际访问 HTTPS `/healthz`；失败时恢复旧配置和旧镜像 ID。同名备份目录已存在会拒绝继续。
+安装器会解析并持久化不可变镜像 ID、生成候选配置、创建 `native-upgrade-backup-0.4.1/` 配置备份、用 Compose `up -d` 更新，并实际访问 HTTPS `/healthz`；失败时恢复旧配置和旧镜像 ID。同名备份目录已存在会拒绝继续。
 
 从不含 stream-edge 值的 v0.3 安装首次迁移时，可追加 `--disable-tcp-edge` 写入 `off`。已有 `.env` 的非空值会被安装器保留，后续重跑参数不是通用开关；如需变更，应先备份并审查安装目录中的 `.env`/Compose。启用 stream edge 时只放行实际路由端口，不要开放整个范围。
 
@@ -81,17 +81,17 @@ PORTLOOM_GATEWAY_PORT=<原Gateway端口> \
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml ps
 docker compose --env-file .env -f compose.yml logs --tail=200 server
-curl -I https://portloom.example.com/healthz
+curl -I https://example.com/healthz
 ```
 
-确认旧 Web 路由在数据库迁移后显示为 HTTPS、`/api/v1/system` 为 0.4.0、Dashboard 指标出现，并验证真正的明文 HTTP、HTTPS、TCP、UDP、路径与额外端口。
+确认旧 Web 路由在数据库迁移后显示为 HTTPS、`/api/v1/system` 为 0.4.1、Dashboard 指标出现，并验证真正的明文 HTTP、HTTPS、TCP、UDP、路径与额外端口。
 
 ## 从 v0.2.x Caddy 安装迁移
 
 ```bash
 ./install-server.sh \
-  --domain portloom.example.com \
-  --version 0.4.0 \
+  --domain example.com \
+  --version 0.4.1 \
   --migrate-native-edge
 ```
 
@@ -101,7 +101,7 @@ curl -I https://portloom.example.com/healthz
 
 任何回滚先保留一份故障现场副本，再停止当前 Compose。不要清空 `server-data`、`ssh-hostkeys`、`ssh-auth` 或 Agent 数据。
 
-- **v0.4 → v0.3.x：**恢复 `native-upgrade-backup-0.4.0/` 中 `.env`、`compose.yml`，同时恢复升级前一致的 `server-data/`。把记录的不可变 ID 同时传给 v0.3 使用的 `PORTLOOM_*_IMAGE` 与 v0.4 使用的 `PORTLOOM_*_IMAGE_ID`，防止本地移动 Tag 被误用：
+- **v0.4 → v0.3.x：**恢复 `native-upgrade-backup-0.4.1/` 中 `.env`、`compose.yml`，同时恢复升级前一致的 `server-data/`。把记录的不可变 ID 同时传给 v0.3 使用的 `PORTLOOM_*_IMAGE` 与 v0.4 使用的 `PORTLOOM_*_IMAGE_ID`，防止本地移动 Tag 被误用：
 
   ```bash
   OLD_SERVER_IMAGE_ID=sha256:replace-with-recorded-server-id

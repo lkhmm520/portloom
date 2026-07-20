@@ -51,23 +51,18 @@ Internal HTTP/TCP/UDP service <────────────────�
 ### Requirements
 
 - Docker daemon access and Compose v2 on the public VPS and the NAS/internal host;
-- a management hostname such as `portloom.example.com` pointing to the VPS;
+- your chosen complete management hostname pointing to the VPS; an apex domain or any subdomain works, with no required `portloom.` prefix;
 - public VPS ports TCP `80`, `443`, and `2222`; ports `80/443` must be free. The NAS needs no inbound port.
 
 ### 1. Install Server on the public host
 
-```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
-less install-server.sh
-chmod 0700 install-server.sh
-./install-server.sh --domain portloom.example.com --version 0.4.0
-```
+Start with the [conventional `compose.yml` template](https://docs.961121.xyz/en/guide/compose-install): download `compose.yml` plus the env template, edit only the management hostname and administrator token, then use a Compose UI or run `docker compose up -d`. The PortLoom installer script is not required first.
 
-The installer starts only `portloom-server` and `portloom-sshd`. Server binds 80/443 directly with the minimal `NET_BIND_SERVICE` capability, then the installer prints the WebUI URL and a random administrator token.
+If you prefer generated random credentials, immutable image resolution, HTTPS readiness, and failed-activation rollback, use the [secure installer](https://docs.961121.xyz/en/install/docker#option-2-secure-installer) instead.
 
 ### 2. Add an Agent in the WebUI
 
-Open `https://portloom.example.com` and sign in. Go to **Add Agent**, enter the Agent name, Server URL, public Server host, and SSH port, then select **Generate command**.
+Open `https://your management hostname` and sign in. Go to **Add Agent**, enter the Agent name, Server URL, public Server host, and SSH port, then select **Generate command**.
 
 ### 3. Run one command on the NAS
 
@@ -88,7 +83,7 @@ Open **Routes → Add route**, select the Agent, keep the default **HTTPS** prot
 
 If wildcard DNS is not configured, point the application hostname to the VPS separately. Wait for Local, Tunnel, and Public state to converge, then open `https://jellyfin.example.com`.
 
-See the [five-minute quick start](https://docs.961121.xyz/en/guide/quick-start) and [Docker installation](https://docs.961121.xyz/en/install/docker) for details.
+See [Compose template installation](https://docs.961121.xyz/en/guide/compose-install), the [five-minute quick start](https://docs.961121.xyz/en/guide/quick-start), and [Docker installation](https://docs.961121.xyz/en/install/docker) for details.
 
 ## Optional advanced integrations
 

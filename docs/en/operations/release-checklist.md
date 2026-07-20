@@ -34,7 +34,7 @@ Set `VERSION` to the exact v0.4 release candidate (for example `0.4.1`) first. E
 
 ## Upgrade and rollback
 
-- [ ] Upgrade a v0.3.x database to v0.4.0 and verify legacy `http` becomes `https` with unchanged old public behavior.
+- [ ] Upgrade a v0.3.x database to current v0.4.1 and verify legacy `http` becomes `https` with unchanged old public behavior.
 - [ ] Save consistent `server-data` before upgrade because config backup excludes the database.
 - [ ] A failed Server version restores old config/image IDs automatically.
 - [ ] Complete a real v0.3.x rollback with the pre-upgrade database.

@@ -46,6 +46,8 @@ integration-test:
 	./tests/installers_test.sh
 	./tests/managed_sshd_image_test.sh
 	./tests/server_compose_cold_start_test.sh
+	./tests/beginner_compose_conflict_guard_test.sh
+	./tests/beginner_compose_lifecycle_test.sh
 	./tests/installers_e2e_test.sh
 	./tests/two_host_flow_test.sh
 docker-build:

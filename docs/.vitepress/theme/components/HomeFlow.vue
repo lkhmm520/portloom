@@ -20,7 +20,7 @@ const en = computed(() => lang.value.startsWith('en'))
     </div>
     <div class="connect-direction"><i></i><strong>{{ en ? 'Connection direction:' : '建连方向：' }}</strong> {{ en ? 'Agent actively connects to Server. No inbound NAS port is opened.' : 'Agent 主动连接 Server，NAS 不开放入站端口。' }}</div>
     <div class="install-steps">
-      <div><b>1</b><span><strong>{{ en ? 'Install Server' : '安装 Server' }}</strong><small>{{ en ? 'Run one script on the public host' : '在公网主机执行一个脚本' }}</small></span></div>
+      <div><b>1</b><span><strong>{{ en ? 'Install Server' : '安装 Server' }}</strong><small>{{ en ? 'Start compose.yml or use the optional installer' : '启动 compose.yml，或选择自动安装器' }}</small></span></div>
       <div><b>2</b><span><strong>{{ en ? 'Open WebUI' : '打开 WebUI' }}</strong><small>{{ en ? 'Generate the Agent command' : '生成 Agent 安装命令' }}</small></span></div>
       <div><b>3</b><span><strong>{{ en ? 'Paste on NAS' : '粘贴到 NAS' }}</strong><small>{{ en ? 'The Agent enrolls and connects' : 'Agent 自动注册并连接' }}</small></span></div>
     </div>

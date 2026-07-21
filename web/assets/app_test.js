@@ -12,6 +12,119 @@ const app = fs.readFileSync(path.join(root, "web/assets/app.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "web/index.html"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 
+const desktopResourceSpacing = /\.resource-list:not\(\.empty-state\)\s*\{[^{}]*\bpadding\s*:\s*1rem\s+1\.2rem\s+1\.2rem\s*(?:;|})/;
+const mobileResourceSpacing = /\.resource-list:not\(\.empty-state\)\s*\{[^{}]*\bpadding\s*:\s*\.9rem\s+\.85rem\s+1rem\s*(?:;|})/;
+
+function sanitizeCSS(source) {
+  const sanitized = source.split("");
+  const blank = index => { sanitized[index] = " "; };
+  const mask = index => { sanitized[index] = "\uE000"; };
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    if (source[cursor] === "/" && source[cursor + 1] === "*") {
+      blank(cursor++);
+      blank(cursor++);
+      while (cursor < source.length) {
+        if (source[cursor] === "*" && source[cursor + 1] === "/") {
+          blank(cursor++);
+          blank(cursor++);
+          break;
+        }
+        blank(cursor++);
+      }
+      continue;
+    }
+
+    if (source[cursor] === '"' || source[cursor] === "'") {
+      const quote = source[cursor];
+      mask(cursor++);
+      while (cursor < source.length) {
+        const character = source[cursor];
+        mask(cursor++);
+        if (character === "\\" && cursor < source.length) {
+          mask(cursor++);
+        } else if (character === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (source[cursor] === "\\") {
+      mask(cursor++);
+      if (cursor >= source.length) continue;
+
+      if (/[0-9a-f]/i.test(source[cursor])) {
+        let hexLength = 0;
+        while (cursor < source.length && hexLength < 6 && /[0-9a-f]/i.test(source[cursor])) {
+          mask(cursor++);
+          hexLength += 1;
+        }
+        if (/\s/.test(source[cursor] || "")) {
+          const whitespace = source[cursor];
+          mask(cursor++);
+          if (whitespace === "\r" && source[cursor] === "\n") mask(cursor++);
+        }
+      } else {
+        const escaped = source[cursor];
+        mask(cursor++);
+        if (escaped === "\r" && source[cursor] === "\n") mask(cursor++);
+      }
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  return sanitized.join("");
+}
+
+function findMobileMediaBlocks(sanitized) {
+  const blocks = [];
+  const mediaStart = /@media\s*\(\s*max-width\s*:\s*760px\s*\)\s*\{/gi;
+  let match;
+
+  while ((match = mediaStart.exec(sanitized)) !== null) {
+    let cursor = mediaStart.lastIndex;
+    let depth = 1;
+    while (cursor < sanitized.length && depth > 0) {
+      if (sanitized[cursor] === "{") depth += 1;
+      if (sanitized[cursor] === "}") depth -= 1;
+      cursor += 1;
+    }
+    assert.equal(depth, 0, "max-width: 760px media block has balanced braces");
+    blocks.push(sanitized.slice(match.index, cursor));
+  }
+
+  return blocks;
+}
+
+function hasTopLevelRule(sanitized, rulePattern) {
+  const matcher = new RegExp(rulePattern.source, "g");
+  let match;
+  while ((match = matcher.exec(sanitized)) !== null) {
+    let depth = 0;
+    for (let cursor = 0; cursor < match.index; cursor += 1) {
+      if (sanitized[cursor] === "{") depth += 1;
+      if (sanitized[cursor] === "}") depth -= 1;
+    }
+    if (depth === 0) return true;
+  }
+  return false;
+}
+
+function analyzeResourceSpacing(source) {
+  const sanitized = sanitizeCSS(source);
+  const mediaBlocks = findMobileMediaBlocks(sanitized);
+  return {
+    sanitized,
+    mediaBlocks,
+    desktop: hasTopLevelRule(sanitized, desktopResourceSpacing),
+    mobile: mediaBlocks.some(block => mobileResourceSpacing.test(block))
+  };
+}
+
 test("add-agent UI keeps token API narrow and generates a shell-safe version-pinned install command", () => {
   const tokenForm = html.match(/<form id="token-form"[\s\S]*?<\/form>/)?.[0] || "";
   assert.ok(tokenForm, "add-agent form exists");
@@ -399,6 +512,82 @@ test("refresh loading state preserves compact accessible label nodes", () => {
   setLoading(false);
   assert.equal(full.textContent, "Refresh");
   assert.equal(attributes["aria-label"], "Refresh");
+});
+
+test("system resource status rows keep readable horizontal panel insets", () => {
+  const desktopRule = ".resource-list:not(.empty-state) { padding: 1rem 1.2rem 1.2rem; }";
+  const mobileRule = ".resource-list:not(.empty-state) { padding: .9rem .85rem 1rem; }";
+
+  let result = analyzeResourceSpacing(`
+    /* ${desktopRule} */
+    @media (max-width: 760px) { /* ${mobileRule} */ }
+  `);
+  assert.equal(result.desktop, false, "commented desktop rule is ignored");
+  assert.equal(result.mobile, false, "commented mobile selector and rule are ignored");
+
+  result = analyzeResourceSpacing(`
+    .desktop-decoy::before { content: "${desktopRule}"; }
+    .media-decoy::after { content: '@media (max-width: 760px) { ${mobileRule} }'; }
+    .escaped-quote-decoy::after { content: "still a string: \\" @media (max-width: 760px) { ${mobileRule} }"; }
+  `);
+  assert.equal(result.desktop, false, "selector and declaration in content are ignored");
+  assert.equal(result.mobile, false, "@media and rule in content are ignored");
+  assert.equal(result.mediaBlocks.length, 0, "string content does not create a media block");
+
+  result = analyzeResourceSpacing(`/* @media (max-width: 760px) { ${mobileRule} } */`);
+  assert.equal(result.mobile, false, "an entirely commented media block is ignored");
+  assert.equal(result.mediaBlocks.length, 0, "commented @media is not parsed");
+
+  result = analyzeResourceSpacing(`
+    ${desktopRule}
+    ${mobileRule}
+    @media (max-width: 760px) { .other { padding: 0; } }
+  `);
+  assert.equal(result.desktop, true, "the real desktop rule remains detectable");
+  assert.equal(result.mobile, false, "a mobile declaration outside the media block is rejected");
+
+  result = analyzeResourceSpacing(`
+    @media (max-width: 760px) { ${desktopRule} }
+  `);
+  assert.equal(result.desktop, false, "desktop padding must be a top-level rule, not mobile-only");
+
+  result = analyzeResourceSpacing(`
+    .resource-list:not(.empty-state) { padding\\78: 1rem 1.2rem 1.2rem; }
+    .resource-list:not(.empty-state) { padding: 1rem "ignored" 1.2rem 1.2rem; }
+    @media (max-width: 760px) {
+      .resource-list:not(.empty-state) { padding\\78: .9rem .85rem 1rem; }
+    }
+  `);
+  assert.equal(result.desktop, false, "escaped property names and string tokens cannot bridge into padding");
+  assert.equal(result.mobile, false, "escaped mobile property names cannot bridge into padding");
+
+  result = analyzeResourceSpacing(`
+    @media (max-width: 760px) "invalid prelude" { ${mobileRule} }
+  `);
+  assert.equal(result.mobile, false, "string tokens make the media prelude invalid instead of disappearing");
+  assert.equal(result.mediaBlocks.length, 0, "invalid media preludes are not parsed as target media blocks");
+
+  const robustFixture = `
+    ${desktopRule}
+    @media (max-width: 760px) {
+      .escaped-close { custom: escaped\\}close; }
+      @supports (display: grid) { ${mobileRule} }
+    }
+    @media (max-width: 760px) {
+      .escaped\\{open { color: green; }
+      @supports (display: block) { .nested { color: green; } }
+    }
+  `;
+  result = analyzeResourceSpacing(robustFixture);
+  assert.equal(result.desktop, true);
+  assert.equal(result.mobile, true, "a real mobile rule survives escaped braces and nesting");
+  assert.equal(result.mediaBlocks.length, 2, "all same-name media blocks are parsed");
+  assert.equal(result.sanitized.length, robustFixture.length, "sanitizing preserves source offsets");
+
+  const css = fs.readFileSync(path.join(root, "web/assets/app.css"), "utf8");
+  result = analyzeResourceSpacing(css);
+  assert.equal(result.desktop, true, "desktop resource-list padding is defined in real CSS");
+  assert.equal(result.mobile, true, "mobile resource-list padding is defined inside a max-width: 760px media block");
 });
 
 test("each module uses one sticky title and action row", () => {

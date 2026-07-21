@@ -54,7 +54,7 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
         self.assertIn("compose.yml", home_flow)
         self.assertNotIn("Run one script", home_flow)
         self.assertNotIn("执行一个脚本", home_flow)
-        self.assertNotIn("portloom.961121.xyz", config)
+        self.assertNotIn("portloom.look4i.com", config)
 
     def test_beginner_env_template_fails_closed_until_required_values_are_set(self):
         env_template = (ROOT / "examples" / "compose.env.example").read_text()

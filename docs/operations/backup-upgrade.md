@@ -52,7 +52,7 @@ v0.4 首次启动会增加路由字段/索引，并把早期版本的 legacy `ht
 下载当前安装器，重复原参数并固定新版本：
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
 ./install-server.sh --domain example.com --version 0.4.1
 ```

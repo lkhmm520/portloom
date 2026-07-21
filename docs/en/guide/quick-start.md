@@ -34,7 +34,7 @@ This is a conventional file-based Compose installation. The PortLoom installer s
 The installer generates a random administrator token, resolves immutable images, verifies real HTTPS, and rolls back a failed activation:
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # replace with your complete management hostname

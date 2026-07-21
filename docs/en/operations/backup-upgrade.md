@@ -52,7 +52,7 @@ If uninterrupted cutover is required, wait for a tested Agent cross-version tran
 Download the current installer, repeat original options, and pin the new release:
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
 ./install-server.sh --domain example.com --version 0.4.1
 ```

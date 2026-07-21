@@ -10,7 +10,7 @@
     <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20sshd%20%7C%20docs-0f9f72" /></a>
     <img alt="Go" src="https://img.shields.io/badge/Go-1.25.12+-00ADD8?logo=go&logoColor=white" />
   </p>
-  <p><a href="https://docs.961121.xyz/en/"><strong>Documentation</strong></a> · <a href="#five-minute-start">Quick start</a> · <a href="https://github.com/lkhmm520/portloom/issues">Issues</a></p>
+  <p><a href="https://docs.look4i.com/en/"><strong>Documentation</strong></a> · <a href="#five-minute-start">Quick start</a> · <a href="https://github.com/lkhmm520/portloom/issues">Issues</a></p>
 </div>
 
 ---
@@ -56,9 +56,9 @@ Internal HTTP/TCP/UDP service <────────────────�
 
 ### 1. Install Server on the public host
 
-Start with the [conventional `compose.yml` template](https://docs.961121.xyz/en/guide/compose-install): download `compose.yml` plus the env template, edit only the management hostname and administrator token, then use a Compose UI or run `docker compose up -d`. The PortLoom installer script is not required first.
+Start with the [conventional `compose.yml` template](https://docs.look4i.com/en/guide/compose-install): download `compose.yml` plus the env template, edit only the management hostname and administrator token, then use a Compose UI or run `docker compose up -d`. The PortLoom installer script is not required first.
 
-If you prefer generated random credentials, immutable image resolution, HTTPS readiness, and failed-activation rollback, use the [secure installer](https://docs.961121.xyz/en/install/docker#option-2-secure-installer) instead.
+If you prefer generated random credentials, immutable image resolution, HTTPS readiness, and failed-activation rollback, use the [secure installer](https://docs.look4i.com/en/install/docker#option-2-secure-installer) instead.
 
 ### 2. Add an Agent in the WebUI
 
@@ -83,7 +83,7 @@ Open **Routes → Add route**, select the Agent, keep the default **HTTPS** prot
 
 If wildcard DNS is not configured, point the application hostname to the VPS separately. Wait for Local, Tunnel, and Public state to converge, then open `https://jellyfin.example.com`.
 
-See [Compose template installation](https://docs.961121.xyz/en/guide/compose-install), the [five-minute quick start](https://docs.961121.xyz/en/guide/quick-start), and [Docker installation](https://docs.961121.xyz/en/install/docker) for details.
+See [Compose template installation](https://docs.look4i.com/en/guide/compose-install), the [five-minute quick start](https://docs.look4i.com/en/guide/quick-start), and [Docker installation](https://docs.look4i.com/en/install/docker) for details.
 
 ## Optional advanced integrations
 
@@ -92,7 +92,7 @@ The default installer includes Server's native HTTPS edge and managed sshd. Only
 - connect an existing Caddy, Nginx, or Nginx Proxy Manager instance to PortLoom upstreams `8080/8081`; this is a legacy/advanced integration, and external Caddy may optionally use the `/api/v1/tls/allow` and `TM_TLS_ASK_*` compatibility interface;
 - omit managed sshd and use a hardened host OpenSSH service with a dedicated unprivileged account.
 
-Neither is a prerequisite for a new installation. See [Production deployment](https://docs.961121.xyz/en/install/production) and [Reverse proxy integration](https://docs.961121.xyz/en/install/reverse-proxy).
+Neither is a prerequisite for a new installation. See [Production deployment](https://docs.look4i.com/en/install/production) and [Reverse proxy integration](https://docs.look4i.com/en/install/reverse-proxy).
 
 ## Container images
 
@@ -133,7 +133,7 @@ make build
 npm run docs:build
 ```
 
-Run `npm run docs:dev` for documentation development. The portals are [Chinese](https://docs.961121.xyz/) and [English](https://docs.961121.xyz/en/).
+Run `npm run docs:dev` for documentation development. The portals are [Chinese](https://docs.look4i.com/) and [English](https://docs.look4i.com/en/).
 
 ## Current boundaries
 
@@ -149,7 +149,7 @@ Never expose the administration listener, Gateway, or allocated SSH loopback por
 
 ## Contributing and release acceptance
 
-Issues and pull requests are welcome. Run `make check`, `make test-race`, and `npm run docs:build` before submitting. Before the first public release is complete, the docs-hosted installer URLs and the `portloom-sshd` GHCR image must not be considered available release artifacts. After publishing, follow the [release acceptance checklist](https://docs.961121.xyz/en/operations/release-checklist) to verify script downloads, all four images, version pinning, and the complete two-host flow.
+Issues and pull requests are welcome. Run `make check`, `make test-race`, and `npm run docs:build` before submitting. Before the first public release is complete, the docs-hosted installer URLs and the `portloom-sshd` GHCR image must not be considered available release artifacts. After publishing, follow the [release acceptance checklist](https://docs.look4i.com/en/operations/release-checklist) to verify script downloads, all four images, version pinning, and the complete two-host flow.
 
 ## License
 

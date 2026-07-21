@@ -89,7 +89,7 @@ jobs:
             matched=false
             for _ in $(seq 1 6); do
               if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                "https://docs.961121.xyz/${script}" >"/tmp/${script}"; then
+                "https://docs.look4i.com/${script}" >"/tmp/${script}"; then
                 expected_sha=$(sha256sum "docs/public/${script}" | cut -d ' ' -f 1)
                 public_sha=$(sha256sum "/tmp/${script}" | cut -d ' ' -f 1)
                 if [ "$public_sha" = "$expected_sha" ]; then matched=true; break; fi
@@ -100,7 +100,7 @@ jobs:
             [ "$matched" = true ] || { echo "production installer unavailable or stale: ${script}" >&2; exit 1; }
             bash -n "/tmp/${script}"
           done
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://docs.961121.xyz/ >/dev/null
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://docs.look4i.com/ >/dev/null
       - name: Log in to GHCR for stable channel promotion
         if: steps.release.outputs.prerelease == 'false'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3

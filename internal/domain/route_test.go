@@ -6,7 +6,7 @@ import (
 )
 
 func validRoute() Route {
-	return Route{Name: "MoviePilot", Protocol: ProtocolHTTP, Domain: "MP.961121.XYZ.", LocalHost: "127.0.0.1", LocalPort: 3333, TunnelGroup: "web", Enabled: true}
+	return Route{Name: "MoviePilot", Protocol: ProtocolHTTP, Domain: "MP.look4i.COM.", LocalHost: "127.0.0.1", LocalPort: 3333, TunnelGroup: "web", Enabled: true}
 }
 
 func TestRouteValidateNormalizesHTTPDomain(t *testing.T) {
@@ -14,7 +14,7 @@ func TestRouteValidateNormalizesHTTPDomain(t *testing.T) {
 	if err := r.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if r.Domain != "mp.961121.xyz" {
+	if r.Domain != "mp.look4i.com" {
 		t.Fatalf("domain=%q", r.Domain)
 	}
 }
@@ -239,7 +239,7 @@ func TestRouteValidateRejectsInvalidPorts(t *testing.T) {
 }
 
 func TestNormalizeHostDropsPortAndCase(t *testing.T) {
-	if got := NormalizeHost("MP.961121.XYZ:443"); got != "mp.961121.xyz" {
+	if got := NormalizeHost("MP.look4i.COM:443"); got != "mp.look4i.com" {
 		t.Fatalf("got %q", got)
 	}
 }

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseWorkflowContracts(unittest.TestCase):
     def test_image_publication_is_exact_immutable_and_external_docs_independent(self):
         text = (ROOT / ".github/workflows/publish-images.yml").read_text()
-        self.assertNotIn("https://docs.961121.xyz/", text)
+        self.assertNotIn("https://docs.look4i.com/", text)
         self.assertNotIn("installer unavailable or stale", text)
         self.assertIn("Verify installers embedded in the published docs image", text)
         self.assertIn("linux/amd64", text)
@@ -34,7 +34,7 @@ class ReleaseWorkflowContracts(unittest.TestCase):
         self.assertIn("contents: write", text)
         self.assertNotIn("tag='${{ inputs.tag }}'", text)
         self.assertIn("INPUT_TAG: ${{ inputs.tag }}", text)
-        self.assertIn("https://docs.961121.xyz/${script}", text)
+        self.assertIn("https://docs.look4i.com/${script}", text)
         self.assertIn("sha256sum", text)
         self.assertIn("org.opencontainers.image.revision", text)
         self.assertIn("gh release create", text)
@@ -46,7 +46,7 @@ class ReleaseWorkflowContracts(unittest.TestCase):
         self.assertIn('docker pull --platform "linux/$arch"', text)
         self.assertIn("Promote verified stable release channels", text)
         self.assertNotIn("\\+", text)
-        self.assertLess(text.index("https://docs.961121.xyz/${script}"), text.index("Promote verified stable release channels"))
+        self.assertLess(text.index("https://docs.look4i.com/${script}"), text.index("Promote verified stable release channels"))
         self.assertLess(text.index("Promote verified stable release channels"), text.index("gh release create"))
 
 

@@ -10,7 +10,7 @@
     <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20sshd%20%7C%20docs-0f9f72" /></a>
     <img alt="Go" src="https://img.shields.io/badge/Go-1.25.12+-00ADD8?logo=go&logoColor=white" />
   </p>
-  <p><a href="https://docs.961121.xyz/"><strong>官方文档</strong></a> · <a href="#五分钟开始">快速开始</a> · <a href="https://github.com/lkhmm520/portloom/issues">问题反馈</a></p>
+  <p><a href="https://docs.look4i.com/"><strong>官方文档</strong></a> · <a href="#五分钟开始">快速开始</a> · <a href="https://github.com/lkhmm520/portloom/issues">问题反馈</a></p>
 </div>
 
 ---
@@ -56,9 +56,9 @@ TCP/UDP 客户端 ──────> PortLoom stream edge ───────
 
 ### 1. 在公网主机安装 Server
 
-推荐直接使用[标准 `compose.yml` 模板](https://docs.961121.xyz/guide/compose-install)：下载 `compose.yml` 与 `.env` 模板，只修改管理域名和管理员 Token，然后在 Compose 图形界面启动或执行 `docker compose up -d`。不要求先运行 PortLoom 安装脚本。
+推荐直接使用[标准 `compose.yml` 模板](https://docs.look4i.com/guide/compose-install)：下载 `compose.yml` 与 `.env` 模板，只修改管理域名和管理员 Token，然后在 Compose 图形界面启动或执行 `docker compose up -d`。不要求先运行 PortLoom 安装脚本。
 
-如希望自动生成随机凭证、固定不可变镜像并执行 HTTPS readiness/失败回滚，也可选择[安全安装脚本](https://docs.961121.xyz/install/docker#方式二-安全安装脚本)。
+如希望自动生成随机凭证、固定不可变镜像并执行 HTTPS readiness/失败回滚，也可选择[安全安装脚本](https://docs.look4i.com/install/docker#方式二-安全安装脚本)。
 
 ### 2. 在 WebUI 添加 Agent
 
@@ -83,7 +83,7 @@ TCP/UDP 客户端 ──────> PortLoom stream edge ───────
 
 如未配置通配符 DNS，请把该业务域名另行解析到 VPS。保存后等待 Local、Tunnel 与 Public 状态收敛，再访问 `https://jellyfin.example.com`。
 
-详细步骤见[Compose 模板安装](https://docs.961121.xyz/guide/compose-install)、[五分钟快速开始](https://docs.961121.xyz/guide/quick-start)与[Docker 安装](https://docs.961121.xyz/install/docker)。
+详细步骤见[Compose 模板安装](https://docs.look4i.com/guide/compose-install)、[五分钟快速开始](https://docs.look4i.com/guide/quick-start)与[Docker 安装](https://docs.look4i.com/install/docker)。
 
 ## 进阶可选集成
 
@@ -92,7 +92,7 @@ TCP/UDP 客户端 ──────> PortLoom stream edge ───────
 - 把现有 Caddy、Nginx 或 Nginx Proxy Manager 接到 PortLoom 的 `8080/8081` 上游；这是遗留/高级集成，外部 Caddy 可选用 `/api/v1/tls/allow` 与 `TM_TLS_ASK_*` 兼容接口；
 - 省略受管 sshd，改用经过加固的宿主 OpenSSH 与专用非管理员账户。
 
-这些不是新安装的前置条件。参见[生产环境部署](https://docs.961121.xyz/install/production)和[反向代理接入](https://docs.961121.xyz/install/reverse-proxy)。
+这些不是新安装的前置条件。参见[生产环境部署](https://docs.look4i.com/install/production)和[反向代理接入](https://docs.look4i.com/install/reverse-proxy)。
 
 ## Docker 镜像
 
@@ -133,7 +133,7 @@ make build
 npm run docs:build
 ```
 
-文档开发可运行 `npm run docs:dev`。中英文入口分别位于[中文文档](https://docs.961121.xyz/)与[English docs](https://docs.961121.xyz/en/)。
+文档开发可运行 `npm run docs:dev`。中英文入口分别位于[中文文档](https://docs.look4i.com/)与[English docs](https://docs.look4i.com/en/)。
 
 ## 当前边界
 
@@ -149,7 +149,7 @@ npm run docs:build
 
 ## 参与项目与发布验收
 
-欢迎提交 Issue 和 Pull Request。提交前运行 `make check`、`make test-race` 与 `npm run docs:build`。首次公开发布完成前，文档站上的安装脚本与 `portloom-sshd` GHCR 镜像不能视为可用发布物；发布后必须按[发布验收清单](https://docs.961121.xyz/operations/release-checklist)验证脚本下载、四个镜像、版本固定和完整两主机流程。
+欢迎提交 Issue 和 Pull Request。提交前运行 `make check`、`make test-race` 与 `npm run docs:build`。首次公开发布完成前，文档站上的安装脚本与 `portloom-sshd` GHCR 镜像不能视为可用发布物；发布后必须按[发布验收清单](https://docs.look4i.com/operations/release-checklist)验证脚本下载、四个镜像、版本固定和完整两主机流程。
 
 ## 许可证
 

@@ -26,7 +26,7 @@ Empty route `Public port` means the primary edge, not fixed 80/443. Keep it empt
 ## Pin and accept v0.4 images
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
 ./install-server.sh --domain example.com --version 0.4.1
 cd ~/.portloom/server

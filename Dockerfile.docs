@@ -6,7 +6,7 @@ COPY docs ./docs
 COPY examples ./examples
 COPY scripts ./scripts
 ARG DOCS_BASE=/
-ARG DOCS_ORIGIN=https://docs.961121.xyz/
+ARG DOCS_ORIGIN=https://docs.look4i.com/
 ENV DOCS_BASE=${DOCS_BASE} DOCS_ORIGIN=${DOCS_ORIGIN} DOCS_LAST_UPDATED=false
 RUN npm run docs:build
 

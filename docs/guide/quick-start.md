@@ -34,7 +34,7 @@ ACME HTTP-01 要求公网 80 能到达 Server 的 HTTP edge；默认安装还要
 安装器会自动生成随机管理员 Token、解析不可变镜像、验证真实 HTTPS，并在失败时回滚：
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # 改成你选定的完整管理域名

@@ -32,7 +32,7 @@ The template exposes built-in public HTTPS, HTTP, and managed SSH by default. Se
 ### Option 2: Secure installer
 
 ```bash
-curl -fsSLo install-server.sh https://docs.961121.xyz/install-server.sh
+curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # replace with your complete management hostname

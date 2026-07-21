@@ -79,7 +79,7 @@ export default defineConfig({
   base: docsBase, cleanUrls: true,
   srcExclude: ['WORKPLAN.md', 'architecture.md', 'deployment.md', 'FEEDBACK-BACKLOG.md'],
   lastUpdated: process.env.DOCS_LAST_UPDATED != 'false',
-  sitemap: { hostname: process.env.DOCS_ORIGIN || 'https://docs.961121.xyz/' },
+  sitemap: { hostname: process.env.DOCS_ORIGIN || 'https://docs.look4i.com/' },
   head: [
     ['link', { rel: 'icon', href: `${docsBase}favicon.svg`, type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#10b981' }], ['meta', { property: 'og:type', content: 'website' }],

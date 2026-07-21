@@ -30,7 +30,7 @@ jobs:
       - name: Build bilingual documentation
         env:
           DOCS_BASE: /
-          DOCS_ORIGIN: https://docs.961121.xyz/
+          DOCS_ORIGIN: https://docs.look4i.com/
         run: npm run docs:build
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request' && vars.ENABLE_GITHUB_PAGES == 'true'

@@ -627,7 +627,7 @@
     if (isSafeImageTag(options.version)) args.push(["--version", options.version]);
     return [
       "export PATH=/opt/bin:/opt/sbin:$PATH",
-      "if command -v curl >/dev/null 2>&1; then curl -fsSLo portloom-install-agent.sh https://docs.961121.xyz/install-agent.sh; elif command -v wget >/dev/null 2>&1; then wget -qO portloom-install-agent.sh https://docs.961121.xyz/install-agent.sh; else echo 'curl or wget is required' >&2; exit 1; fi",
+      "if command -v curl >/dev/null 2>&1; then curl -fsSLo portloom-install-agent.sh https://docs.look4i.com/install-agent.sh; elif command -v wget >/dev/null 2>&1; then wget -qO portloom-install-agent.sh https://docs.look4i.com/install-agent.sh; else echo 'curl or wget is required' >&2; exit 1; fi",
       "chmod 0700 portloom-install-agent.sh",
       `./portloom-install-agent.sh ${args.map(([flag, value]) => `${flag} ${shellQuote(value)}`).join(" ")}`
     ].join(" && ");

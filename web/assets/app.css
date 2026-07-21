@@ -231,7 +231,12 @@ dialog::backdrop { background: rgb(2 6 11 / 78%); backdrop-filter: blur(4px); }
 .traffic-total b { font-size: 1.05rem; }
 .traffic-total small { color: var(--muted, #8b93a7); font-size: .68rem; }
 .resource-list { display: flex; flex-direction: column; gap: .75rem; }
+.resource-list:not(.empty-state) { padding: 1rem 1.2rem 1.2rem; }
 .resource-row { display: flex; flex-direction: column; gap: .35rem; }
 .resource-row .meter { height: 6px; border-radius: 4px; background: rgba(255, 255, 255, .07); overflow: hidden; }
 .resource-row .meter i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #26be89, #59d3ac); }
 .field-hint { display: block; margin-top: .3rem; color: var(--muted, #8b93a7); font-size: .68rem; }
+
+@media (max-width: 760px) {
+  .resource-list:not(.empty-state) { padding: .9rem .85rem 1rem; }
+}

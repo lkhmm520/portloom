@@ -35,6 +35,10 @@ func WithRemoteBindHost(host string) ReconcilerOption {
 	return func(reconciler *Reconciler) { reconciler.remoteBindHost = host }
 }
 
+func WithMasterReady() ReconcilerOption {
+	return func(reconciler *Reconciler) { reconciler.masterReady = true }
+}
+
 func NewReconciler(runner SSHRunner, checker HealthChecker, options ...ReconcilerOption) *Reconciler {
 	reconciler := &Reconciler{runner: runner, checker: checker, remoteBindHost: "127.0.0.1",
 		active: map[string]sshctl.Forward{}, relays: map[string]*udpRelay{}}

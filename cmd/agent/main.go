@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,6 +58,9 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 		return fmt.Errorf("configure managed SSH access: %w", err)
 	}
 	reconcilerOptions := []agent.ReconcilerOption{}
+	if strings.TrimSpace(cfg.SSHPublicKeyFile) != "" {
+		reconcilerOptions = append(reconcilerOptions, agent.WithMasterReady())
+	}
 	if cfg.ManagedSSHIsolated {
 		bindAddress, err := managedssh.BindAddress(credentials.ClientID)
 		if err != nil {

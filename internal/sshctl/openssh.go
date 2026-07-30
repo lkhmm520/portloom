@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -107,8 +109,13 @@ func validHost(host string) bool {
 }
 
 func (r *OpenSSHRunner) EnsureMaster(ctx context.Context) error {
+	if err := r.CheckMaster(ctx); err == nil {
+		if err := r.Close(ctx); err != nil {
+			return fmt.Errorf("replace existing SSH ControlMaster: %w", err)
+		}
+	}
 	cfg := r.config
-	args := []string{"-M", "-N", "-f", "-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-o", "ControlPath=" + cfg.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + cfg.KnownHostsFile, "-o", "ConnectTimeout=" + strconv.Itoa(cfg.ConnectTimeout), "-i", cfg.IdentityFile, "-p", strconv.Itoa(cfg.Port), destination(cfg)}
+	args := []string{"-M", "-N", "-f", "-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-o", "ControlPath=" + cfg.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + cfg.KnownHostsFile, "-o", "ConnectTimeout=" + strconv.Itoa(cfg.ConnectTimeout), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", cfg.IdentityFile, "-p", strconv.Itoa(cfg.Port), destination(cfg)}
 	if err := r.executor.Run(ctx, SSHExecutable, args); err != nil {
 		return fmt.Errorf("start SSH ControlMaster: %w", err)
 	}
@@ -172,18 +179,46 @@ func endpointHost(host string) string {
 
 func runCommand(ctx context.Context, path string, args []string) error {
 	cmd := exec.CommandContext(ctx, path, args...)
+	for _, arg := range args {
+		if arg == "-f" {
+			output, err := os.CreateTemp("", "portloom-command-output-*")
+			if err != nil {
+				return fmt.Errorf("create detached command output: %w", err)
+			}
+			defer os.Remove(output.Name())
+			defer output.Close()
+			cmd.Stdout = output
+			cmd.Stderr = output
+			runErr := cmd.Run()
+			if runErr == nil {
+				return nil
+			}
+			if _, err := output.Seek(0, io.SeekStart); err != nil {
+				return runErr
+			}
+			data, err := io.ReadAll(io.LimitReader(output, 1025))
+			if err != nil {
+				return runErr
+			}
+			return commandError(runErr, string(data))
+		}
+	}
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Run(); err != nil {
-		text := strings.TrimSpace(output.String())
-		if len(text) > 1024 {
-			text = text[:1024]
-		}
-		if text != "" {
-			return fmt.Errorf("%w: %s", err, text)
-		}
-		return err
+		return commandError(err, output.String())
 	}
 	return nil
+}
+
+func commandError(err error, output string) error {
+	text := strings.TrimSpace(output)
+	if len(text) > 1024 {
+		text = text[:1024]
+	}
+	if text != "" {
+		return fmt.Errorf("%w: %s", err, text)
+	}
+	return err
 }

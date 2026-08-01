@@ -119,9 +119,15 @@ func NewOpenSSHRunner(config Config, options ...Option) (*OpenSSHRunner, error) 
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
+	if err := validateControlSocketIdentityPlatform(); err != nil {
+		return nil, err
+	}
 	resolvedControlPath, err := resolveControlPath(config)
 	if err != nil {
 		return nil, err
+	}
+	if err := ensurePrivateControlDirectory(resolvedControlPath); err != nil {
+		return nil, fmt.Errorf("prepare private SSH ControlPath directory: %w", err)
 	}
 	runner := &OpenSSHRunner{
 		config:               config,
@@ -136,6 +142,72 @@ func NewOpenSSHRunner(config Config, options ...Option) (*OpenSSHRunner, error) 
 		option(runner)
 	}
 	return runner, nil
+}
+
+// ValidateConfig validates SSH settings without resolving tokens, starting
+// processes, or preparing runtime filesystem state.
+func ValidateConfig(config Config) error {
+	if config.Port == 0 {
+		config.Port = 22
+	}
+	if config.ConnectTimeout == 0 {
+		config.ConnectTimeout = 10
+	}
+	return validateConfig(config)
+}
+
+func ensurePrivateControlDirectory(controlPath string) error {
+	directory := filepath.Clean(filepath.Dir(controlPath))
+	parent := filepath.Dir(directory)
+	if err := validateControlPathAncestors(parent); err != nil {
+		return err
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("create ControlPath directory %q: %w", directory, err)
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return fmt.Errorf("inspect ControlPath directory %q: %w", directory, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ControlPath directory %q is not a real directory", directory)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("inspect ControlPath directory %q ownership", directory)
+	}
+	if int(stat.Uid) != os.Geteuid() {
+		return fmt.Errorf("ControlPath directory %q is owned by uid %d, expected %d", directory, stat.Uid, os.Geteuid())
+	}
+	if permissions := info.Mode().Perm(); permissions != 0o700 {
+		return fmt.Errorf("ControlPath directory %q has permissions %04o, expected 0700", directory, permissions)
+	}
+	return nil
+}
+
+func validateControlPathAncestors(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("inspect ControlPath ancestor %q: %w", current, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("ControlPath ancestor %q is not a real directory", current)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("inspect ControlPath ancestor %q ownership", current)
+		}
+		if int(stat.Uid) != 0 && int(stat.Uid) != os.Geteuid() {
+			return fmt.Errorf("ControlPath ancestor %q is owned by untrusted uid %d", current, stat.Uid)
+		}
+		if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return fmt.Errorf("ControlPath ancestor %q is group/other-writable without the sticky bit", current)
+		}
+		if filepath.Dir(current) == current {
+			return nil
+		}
+	}
 }
 
 func validateConfig(config Config) error {
@@ -624,16 +696,18 @@ func (r *OpenSSHRunner) recordManagedControlSocket(master *managedProcess) error
 		return nil
 	}
 	master.mu.Unlock()
-	info, err := os.Lstat(r.resolvedControlPath)
+	identity, err := openControlSocketIdentity(r.resolvedControlPath)
 	if err != nil {
 		return fmt.Errorf("record SSH ControlMaster socket identity: %w", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("record SSH ControlMaster socket identity: %q is not a Unix socket", r.resolvedControlPath)
-	}
 	master.mu.Lock()
+	if master.controlSocket != nil {
+		master.mu.Unlock()
+		_ = identity.Close()
+		return nil
+	}
 	master.controlPath = r.resolvedControlPath
-	master.controlSocket = info
+	master.controlSocket = identity
 	master.mu.Unlock()
 	return nil
 }
@@ -658,7 +732,11 @@ func (r *OpenSSHRunner) cleanupManagedControlSocket(master *managedProcess) erro
 	if identity == nil {
 		return errors.New("owned SSH ControlMaster socket identity is unavailable")
 	}
-	if current.Mode()&os.ModeSocket == 0 || !os.SameFile(identity, current) {
+	owned, err := identity.Stat()
+	if err != nil {
+		return fmt.Errorf("reinspect owned SSH ControlMaster socket identity: %w", err)
+	}
+	if current.Mode()&os.ModeSocket == 0 || !os.SameFile(owned, current) {
 		return fmt.Errorf("refuse to remove changed SSH ControlMaster socket %q", path)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -669,6 +747,7 @@ func (r *OpenSSHRunner) cleanupManagedControlSocket(master *managedProcess) erro
 
 func (r *OpenSSHRunner) stopManaged(ctx context.Context, master *managedProcess) error {
 	if master.isDone() {
+		_ = r.recordManagedControlSocket(master)
 		if err := r.cleanupManagedControlSocket(master); err != nil {
 			return err
 		}
@@ -683,6 +762,7 @@ func (r *OpenSSHRunner) stopManaged(ctx context.Context, master *managedProcess)
 	closeErr := r.closeControl(graceCtx)
 	if waitManaged(graceCtx, master) {
 		graceCancel()
+		_ = r.recordManagedControlSocket(master)
 		if err := r.cleanupManagedControlSocket(master); err != nil {
 			return err
 		}
@@ -700,6 +780,7 @@ func (r *OpenSSHRunner) stopManaged(ctx context.Context, master *managedProcess)
 	confirmCtx, confirmCancel := context.WithTimeout(ctx, managedKillConfirmTimeout)
 	defer confirmCancel()
 	if waitManaged(confirmCtx, master) {
+		_ = r.recordManagedControlSocket(master)
 		if err := r.cleanupManagedControlSocket(master); err != nil {
 			return err
 		}
@@ -828,7 +909,7 @@ type managedProcess struct {
 	waitErr       error
 	killFn        func() error
 	controlPath   string
-	controlSocket os.FileInfo
+	controlSocket *os.File
 	cleanOnce     sync.Once
 }
 
@@ -912,6 +993,13 @@ func (p *managedProcess) kill() error {
 
 func (p *managedProcess) cleanup() {
 	p.cleanOnce.Do(func() {
+		p.mu.Lock()
+		controlSocket := p.controlSocket
+		p.controlSocket = nil
+		p.mu.Unlock()
+		if controlSocket != nil {
+			_ = controlSocket.Close()
+		}
 		_ = p.output.Close()
 		_ = os.Remove(p.output.Name())
 	})

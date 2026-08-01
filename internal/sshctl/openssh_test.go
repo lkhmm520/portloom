@@ -35,15 +35,25 @@ func (e *recordingExecutor) Run(_ context.Context, path string, args []string) e
 	}
 	return e.err
 }
-func validSSHConfig() Config {
-	return Config{User: "tunnel-agent", Host: "gateway.example.com", Port: 2222, IdentityFile: "/run/secrets/agent_key", KnownHostsFile: "/etc/portloom/known_hosts", ControlPath: "/tmp/portloom-%C.sock", ConnectTimeout: 7}
+func validSSHConfig(t *testing.T) Config {
+	t.Helper()
+	return Config{User: "tunnel-agent", Host: "gateway.example.com", Port: 2222, IdentityFile: "/run/secrets/agent_key", KnownHostsFile: "/etc/portloom/known_hosts", ControlPath: filepath.Join(privateTempDir(t), "%C.sock"), ConnectTimeout: 7}
 }
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
 func withoutControlPathLockForTest() Option {
 	return func(r *OpenSSHRunner) { r.disableControlLockForTest = true }
 }
 func newTestRunner(t *testing.T, executor Executor) *OpenSSHRunner {
 	t.Helper()
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest())
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest())
 	if err != nil {
 		t.Fatalf("NewOpenSSHRunner: %v", err)
 	}
@@ -63,7 +73,7 @@ func TestEnsureMasterUsesFixedExecutableAndArgumentArray(t *testing.T) {
 	if call.path != SSHExecutable {
 		t.Fatalf("path=%q", call.path)
 	}
-	want := []string{"-F", "/dev/null", "-M", "-N", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath=/tmp/portloom-%C.sock", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/etc/portloom/known_hosts", "-o", "ConnectTimeout=7", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", "/run/secrets/agent_key", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	want := []string{"-F", "/dev/null", "-M", "-N", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath=" + runner.config.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/etc/portloom/known_hosts", "-o", "ConnectTimeout=7", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", "/run/secrets/agent_key", "-p", "2222", "tunnel-agent@gateway.example.com"}
 	if !reflect.DeepEqual(call.args, want) {
 		t.Fatalf("args:\n got %#v\nwant %#v", call.args, want)
 	}
@@ -187,7 +197,7 @@ func TestEnsureMasterHasIndependentStartupTimeout(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithMasterStartupTimeout(25*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithMasterStartupTimeout(25*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +213,7 @@ func TestEnsureMasterHasIndependentStartupTimeout(t *testing.T) {
 
 func TestEnsureMasterUsesUnbracketedIPv6Destination(t *testing.T) {
 	executor := &recordingExecutor{errs: []error{errControlMasterAbsent}}
-	cfg := validSSHConfig()
+	cfg := validSSHConfig(t)
 	cfg.Host = "2001:db8::1"
 	runner, err := NewOpenSSHRunner(cfg, WithExecutor(executor), withoutControlPathLockForTest())
 	if err != nil {
@@ -227,7 +237,7 @@ func TestCheckMasterUsesFixedExecutableAndArgumentArray(t *testing.T) {
 	if err := runner.CheckMaster(context.Background()); err != nil {
 		t.Fatalf("CheckMaster: %v", err)
 	}
-	want := []string{"-F", "/dev/null", "-S", "/tmp/portloom-%C.sock", "-O", "check", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	want := []string{"-F", "/dev/null", "-S", runner.config.ControlPath, "-O", "check", "-p", "2222", "tunnel-agent@gateway.example.com"}
 	if len(executor.calls) != 1 || executor.calls[0].path != SSHExecutable || !reflect.DeepEqual(executor.calls[0].args, want) {
 		t.Fatalf("calls=%#v", executor.calls)
 	}
@@ -274,8 +284,8 @@ func TestForwardAndCancelUseOpenSSHControlCommands(t *testing.T) {
 	if len(executor.calls) != 2 {
 		t.Fatalf("calls=%d", len(executor.calls))
 	}
-	wantForward := []string{"-F", "/dev/null", "-S", "/tmp/portloom-%C.sock", "-O", "forward", "-R", "127.0.0.1:14001:192.168.1.20:8080", "-p", "2222", "tunnel-agent@gateway.example.com"}
-	wantCancel := []string{"-F", "/dev/null", "-S", "/tmp/portloom-%C.sock", "-O", "cancel", "-R", "127.0.0.1:14001:192.168.1.20:8080", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	wantForward := []string{"-F", "/dev/null", "-S", runner.config.ControlPath, "-O", "forward", "-R", "127.0.0.1:14001:192.168.1.20:8080", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	wantCancel := []string{"-F", "/dev/null", "-S", runner.config.ControlPath, "-O", "cancel", "-R", "127.0.0.1:14001:192.168.1.20:8080", "-p", "2222", "tunnel-agent@gateway.example.com"}
 	if !reflect.DeepEqual(executor.calls[0].args, wantForward) {
 		t.Fatalf("forward=%#v", executor.calls[0].args)
 	}
@@ -289,7 +299,7 @@ func TestCloseControlUsesControlMasterExit(t *testing.T) {
 	if err := runner.closeControl(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"-F", "/dev/null", "-S", "/tmp/portloom-%C.sock", "-O", "exit", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	want := []string{"-F", "/dev/null", "-S", runner.config.ControlPath, "-O", "exit", "-p", "2222", "tunnel-agent@gateway.example.com"}
 	if len(executor.calls) != 1 || !reflect.DeepEqual(executor.calls[0].args, want) {
 		t.Fatalf("calls=%#v", executor.calls)
 	}
@@ -359,7 +369,7 @@ func TestEnsureMasterCallerCancellationDoesNotKillOwnedMaster(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(time.Second))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +406,7 @@ func TestEnsureMasterCallerCancellationDuringGracefulReplacementDoesNotKillOwned
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(time.Second))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +459,7 @@ func TestControlOperationsHaveIndependentTimeouts(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,13 +516,13 @@ func TestManagedProcessDiagnosticOutputIsCapped(t *testing.T) {
 }
 
 func TestCloseRemovesOnlyOwnedStaleControlSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "master.sock")
+	path := filepath.Join(privateTempDir(t), "master.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	listener.SetUnlinkOnClose(false)
-	identity, err := os.Lstat(path)
+	identity, err := openControlSocketIdentity(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,14 +549,154 @@ func TestCloseRemovesOnlyOwnedStaleControlSocket(t *testing.T) {
 	}
 }
 
+func TestPrivateControlDirectoryIsCreatedAndValidated(t *testing.T) {
+	base := t.TempDir()
+	directory := filepath.Join(base, "control")
+	config := validSSHConfig(t)
+	config.ControlPath = filepath.Join(directory, "%C.sock")
+	if _, err := NewOpenSSHRunner(config, withoutControlPathLockForTest()); err != nil {
+		t.Fatalf("create private ControlPath directory: %v", err)
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("private directory mode=%v", info.Mode())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		t.Fatalf("private directory owner=%v", info.Sys())
+	}
+}
+
+func TestPrivateControlDirectoryRejectsUnsafeDirectoryAndSymlink(t *testing.T) {
+	base := t.TempDir()
+	unsafe := filepath.Join(base, "unsafe")
+	if err := os.Mkdir(unsafe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unsafe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := validSSHConfig(t)
+	config.ControlPath = filepath.Join(unsafe, "%C.sock")
+	if _, err := NewOpenSSHRunner(config); err == nil || !strings.Contains(err.Error(), "expected 0700") {
+		t.Fatalf("unsafe directory err=%v", err)
+	}
+
+	target := filepath.Join(base, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	config.ControlPath = filepath.Join(link, "%C.sock")
+	if _, err := NewOpenSSHRunner(config); err == nil || !strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("symlink directory err=%v", err)
+	}
+
+	shared := filepath.Join(base, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	config.ControlPath = filepath.Join(shared, "control", "%C.sock")
+	if _, err := NewOpenSSHRunner(config); err == nil || !strings.Contains(err.Error(), "writable without the sticky bit") {
+		t.Fatalf("unsafe ancestor err=%v", err)
+	}
+}
+
+func TestOpenControlSocketIdentityRejectsNonSocketAndSymlink(t *testing.T) {
+	directory := t.TempDir()
+	regular := filepath.Join(directory, "regular")
+	if err := os.WriteFile(regular, []byte("not a socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if identity, err := openControlSocketIdentity(regular); err == nil {
+		_ = identity.Close()
+		t.Fatal("regular file was accepted as a control socket identity")
+	}
+	listenerPath := filepath.Join(directory, "listener.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: listenerPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	symlink := filepath.Join(directory, "symlink.sock")
+	if err := os.Symlink(listenerPath, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if identity, err := openControlSocketIdentity(symlink); err == nil {
+		_ = identity.Close()
+		t.Fatal("symlink to a socket was accepted as a control socket identity")
+	}
+}
+
+func TestCloseClearsExitedMasterThatNeverCreatedControlSocket(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "no-socket-master-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	process := &managedProcess{cmd: &exec.Cmd{}, output: output, done: done, controlPath: filepath.Join(privateTempDir(t), "never-created.sock")}
+	runner := newTestRunner(t, &recordingExecutor{})
+	runner.master = process
+	if err := runner.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if runner.currentMaster() != nil {
+		t.Fatal("exited socketless master was retained")
+	}
+	if _, err := os.Stat(output.Name()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed output survived cleanup: %v", err)
+	}
+}
+
+func TestClosePinsAndRemovesSocketCreatedBeforeFastExit(t *testing.T) {
+	path := filepath.Join(privateTempDir(t), "fast-exit.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.CreateTemp(t.TempDir(), "fast-exit-master-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	process := &managedProcess{cmd: &exec.Cmd{}, output: output, done: done, controlPath: path}
+	runner := newTestRunner(t, &recordingExecutor{})
+	runner.resolvedControlPath = path
+	runner.master = process
+	if err := runner.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fast-exit stale socket survived: %v", err)
+	}
+	if runner.currentMaster() != nil {
+		t.Fatal("fast-exit master was retained")
+	}
+}
+
 func TestCloseRefusesToRemoveReplacedControlSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "master.sock")
+	path := filepath.Join(privateTempDir(t), "master.sock")
 	first, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.SetUnlinkOnClose(false)
-	identity, err := os.Lstat(path)
+	identity, err := openControlSocketIdentity(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,16 +731,19 @@ func TestCloseRefusesToRemoveReplacedControlSocket(t *testing.T) {
 		t.Fatal("ownership was cleared despite ambiguous socket identity")
 	}
 	process.cleanup()
+	if _, err := identity.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("control socket identity descriptor survived cleanup: %v", err)
+	}
 }
 
 func TestForcedKillRemovesVerifiedOwnedStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "master.sock")
+	path := filepath.Join(privateTempDir(t), "master.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	listener.SetUnlinkOnClose(false)
-	identity, err := os.Lstat(path)
+	identity, err := openControlSocketIdentity(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +763,7 @@ func TestForcedKillRemovesVerifiedOwnedStaleSocket(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +818,7 @@ func TestRunnerCloseKillsManagedMasterWhenControlSocketIsUnresponsive(t *testing
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +846,7 @@ func TestCloseDoesNotWaitForeverWhenManagedExitCannotBeConfirmed(t *testing.T) {
 	}
 	process := &managedProcess{cmd: &exec.Cmd{}, output: output, done: make(chan struct{})}
 	executor := &recordingExecutor{err: errors.New("control socket unavailable")}
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +884,7 @@ func TestCloseReportsKillFailureAndRetainsOwnership(t *testing.T) {
 		done:   make(chan struct{}),
 		killFn: func() error { return killErr },
 	}
-	runner, err := NewOpenSSHRunner(validSSHConfig(), WithExecutor(&recordingExecutor{err: errors.New("control socket unavailable")}), withoutControlPathLockForTest(), WithOperationTimeout(10*time.Millisecond))
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(&recordingExecutor{err: errors.New("control socket unavailable")}), withoutControlPathLockForTest(), WithOperationTimeout(10*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,8 +910,8 @@ func TestResolveControlPathUsesOpenSSHTokensWithExternalConfigDisabled(t *testin
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "%h-%p-%r-%%-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "%h-%p-%r-%%-%C.sock")
 	runner, err := NewOpenSSHRunner(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -774,7 +927,7 @@ func TestResolveControlPathUsesOpenSSHTokensWithExternalConfigDisabled(t *testin
 }
 
 func TestEnsureMasterRemovesVerifiedSameUIDStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "stale.sock")
+	path := filepath.Join(privateTempDir(t), "stale.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -785,7 +938,7 @@ func TestEnsureMasterRemovesVerifiedSameUIDStaleSocket(t *testing.T) {
 	}
 	stale := errors.New("Control socket connect(" + path + "): Connection refused")
 	executor := &recordingExecutor{errs: []error{stale, stale, errControlMasterAbsent, nil, nil}}
-	cfg := validSSHConfig()
+	cfg := validSSHConfig(t)
 	cfg.ControlPath = path
 	runner, err := NewOpenSSHRunner(cfg, WithExecutor(executor), withoutControlPathLockForTest())
 	if err != nil {
@@ -803,11 +956,11 @@ func TestEnsureMasterRemovesVerifiedSameUIDStaleSocket(t *testing.T) {
 }
 
 func TestEnsureMasterRefusesConnectionRefusedNonSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "control.sock")
+	path := filepath.Join(privateTempDir(t), "control.sock")
 	if err := os.WriteFile(path, []byte("not a socket"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := validSSHConfig()
+	cfg := validSSHConfig(t)
 	cfg.ControlPath = path
 	runner, err := NewOpenSSHRunner(cfg, WithExecutor(&recordingExecutor{err: errors.New("Control socket connect(" + path + "): Connection refused")}), withoutControlPathLockForTest())
 	if err != nil {
@@ -823,7 +976,7 @@ func TestEnsureMasterRefusesConnectionRefusedNonSocket(t *testing.T) {
 }
 
 func TestManagedProcessWaitDelayBoundsInheritedOutputPipe(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	pidFile := filepath.Join(privateTempDir(t), "child.pid")
 	script := "(setsid sh -c 'echo $$ > " + pidFile + "; sleep 30' >&2 2>&2 </dev/null &) ; exit 0"
 	process, err := startManagedProcess("/bin/sh", []string{"-c", script})
 	if err != nil {
@@ -857,8 +1010,8 @@ func TestManagedProcessWaitDelayBoundsInheritedOutputPipe(t *testing.T) {
 }
 
 func TestWithExecutorKeepsControlPathLockEnabled(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master-%C.sock")
 	first, err := NewOpenSSHRunner(cfg, WithExecutor(&recordingExecutor{}))
 	if err != nil {
 		t.Fatal(err)
@@ -879,8 +1032,8 @@ func TestWithExecutorKeepsControlPathLockEnabled(t *testing.T) {
 }
 
 func TestEnsureMasterRetainsCrossProcessLockWhenUnmanagedExitIsUnconfirmed(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master-%C.sock")
 	runner, err := NewOpenSSHRunner(cfg, WithExecutor(&recordingExecutor{errs: []error{nil, nil, context.DeadlineExceeded}}))
 	if err != nil {
 		t.Fatal(err)
@@ -898,8 +1051,8 @@ func TestEnsureMasterRetainsCrossProcessLockWhenUnmanagedExitIsUnconfirmed(t *te
 }
 
 func TestCloseRetainsCrossProcessLockWhenUnmanagedStateIsUnknown(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master-%C.sock")
 	runner, err := NewOpenSSHRunner(cfg, WithExecutor(&recordingExecutor{err: context.DeadlineExceeded}))
 	if err != nil {
 		t.Fatal(err)
@@ -917,8 +1070,8 @@ func TestCloseRetainsCrossProcessLockWhenUnmanagedStateIsUnknown(t *testing.T) {
 }
 
 func TestEnsureMasterRetainsCrossProcessLockWhenManagedTerminationIsUnconfirmed(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master-%C.sock")
 	killErr := errors.New("kill denied")
 	output, err := os.CreateTemp(t.TempDir(), "unconfirmed-master-*")
 	if err != nil {
@@ -975,7 +1128,7 @@ func TestControlPathLockHelper(t *testing.T) {
 	if controlPath == "" {
 		return
 	}
-	cfg := validSSHConfig()
+	cfg := validSSHConfig(t)
 	cfg.ControlPath = controlPath
 	runner, err := NewOpenSSHRunner(cfg)
 	if err != nil {
@@ -994,8 +1147,8 @@ func TestControlPathLockHelper(t *testing.T) {
 }
 
 func TestControlPathLockIsExclusiveAcrossProcessesAndReusable(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master-%C.sock")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master-%C.sock")
 	first, err := NewOpenSSHRunner(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1029,9 +1182,9 @@ func TestControlPathLockIsExclusiveAcrossProcessesAndReusable(t *testing.T) {
 }
 
 func TestControlPathLockRefusesSymlink(t *testing.T) {
-	cfg := validSSHConfig()
-	cfg.ControlPath = filepath.Join(t.TempDir(), "master.sock")
-	target := filepath.Join(t.TempDir(), "target")
+	cfg := validSSHConfig(t)
+	cfg.ControlPath = filepath.Join(privateTempDir(t), "master.sock")
+	target := filepath.Join(privateTempDir(t), "target")
 	if err := os.WriteFile(target, []byte("protected"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1205,7 @@ func TestControlPathLockRefusesSymlink(t *testing.T) {
 }
 
 func TestConfigRejectsArgumentInjectionAndUnsafeForward(t *testing.T) {
-	cases := []Config{func() Config { c := validSSHConfig(); c.User = "root -oProxyCommand=bad"; return c }(), func() Config { c := validSSHConfig(); c.Host = "gateway;touch /tmp/pwned"; return c }(), func() Config { c := validSSHConfig(); c.ControlPath = "relative.sock"; return c }(), func() Config { c := validSSHConfig(); c.KnownHostsFile = ""; return c }()}
+	cases := []Config{func() Config { c := validSSHConfig(t); c.User = "root -oProxyCommand=bad"; return c }(), func() Config { c := validSSHConfig(t); c.Host = "gateway;touch /tmp/pwned"; return c }(), func() Config { c := validSSHConfig(t); c.ControlPath = "relative.sock"; return c }(), func() Config { c := validSSHConfig(t); c.KnownHostsFile = ""; return c }()}
 	for _, cfg := range cases {
 		if _, err := NewOpenSSHRunner(cfg); err == nil {
 			t.Fatalf("accepted: %#v", cfg)

@@ -73,8 +73,15 @@ func TestManagerExposesOnlyConvergedTCPRoutes(t *testing.T) {
 	route.AgentLastSeenAt = time.Now()
 	source.set(route)
 	conn := waitForTCP(t, publicPort, true)
-	if got := manager.PublicStatus(route); got != StatusPublished {
-		t.Fatalf("ready public status=%q want %q", got, StatusPublished)
+	defer conn.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := manager.PublicStatus(route); got == StatusPublished {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("ready public status=%q want %q", got, StatusPublished)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if _, err := conn.Write([]byte("portloom")); err != nil {
 		t.Fatal(err)

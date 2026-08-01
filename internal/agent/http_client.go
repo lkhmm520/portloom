@@ -126,7 +126,7 @@ func (e *HTTPStatusError) Error() string {
 
 func (e *HTTPStatusError) Temporary() bool {
 	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooEarly ||
-		e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+		e.StatusCode == http.StatusTooManyRequests || (e.StatusCode >= 500 && e.StatusCode <= 599)
 }
 
 func checkStatus(resp *http.Response) error {

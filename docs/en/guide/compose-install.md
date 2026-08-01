@@ -134,7 +134,7 @@ After the Agent appears in the WebUI, follow the [five-minute quick start](/en/g
 
 ## Data, restarts, and upgrades
 
-- The template pins the verified Server/sshd `0.4.1` images and project-local `./data/` paths so shell variables cannot silently switch images or data sources. Advanced customization should be an explicit, reviewed edit to `compose.yml`.
+- The template pins the verified Server/sshd `0.4.3` images and project-local `./data/` paths so shell variables cannot silently switch images or data sources. Advanced customization should be an explicit, reviewed edit to `compose.yml`.
 - Keep the dedicated project directory at `0711` so non-root containers can traverse NAS/FUSE paths, while the private `.env` remains `0600`. Do not apply these modes to an entire home directory.
 - Restart only the long-running services with `docker compose restart server sshd`. After configuration or image changes, use `docker compose up -d`; do not restart the one-shot `state-init` by itself.
 - Do not recreate the stack with ad-hoc `docker run`, and never delete the data directory during replacement.

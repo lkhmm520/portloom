@@ -36,7 +36,7 @@ curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # replace with your complete management hostname
-./install-server.sh --domain "$DOMAIN" --version 0.4.1
+./install-server.sh --domain "$DOMAIN" --version 0.4.3
 ```
 
 The installer generates:
@@ -91,11 +91,11 @@ On first installer use, you can move the primary edge or disable TCP/UDP publica
 DOMAIN='example.com'
 
 # Move the primary edge to local 8088/8443; public 80 must still reach 8088
-./install-server.sh --domain "$DOMAIN" --version 0.4.1 \
+./install-server.sh --domain "$DOMAIN" --version 0.4.3 \
   --http-port 8088 --https-port 8443
 
 # Do not publish TCP/UDP on first install
-./install-server.sh --domain "$DOMAIN" --version 0.4.1 \
+./install-server.sh --domain "$DOMAIN" --version 0.4.3 \
   --disable-tcp-edge
 ```
 
@@ -107,7 +107,7 @@ Allow TCP for custom web/TCP ports and UDP for UDP route ports. If the HTTP edge
 
 - Compose-template state defaults to `data/` in the project directory; installer state defaults to `~/.portloom/server/`.
 - Never delete the Server database, certificate cache, SSH host keys, or Agent identity.
-- The beginner template pins the verified Server/sshd `0.4.1` images and project-local `./data/` paths. Back up the complete project before explicitly changing both versions in `compose.yml`.
+- The beginner template pins the verified Server/sshd `0.4.3` images and project-local `./data/` paths. Back up the complete project before explicitly changing both versions in `compose.yml`.
 - Installer upgrades resolve immutable images and roll back automatically. For manual Compose upgrades, you own backup, tag changes, `pull`, `up -d`, and health verification.
 - The current Agent installer does not support in-place cross-version changes. Do not force one by deleting keys or identity.
 

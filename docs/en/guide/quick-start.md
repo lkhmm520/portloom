@@ -38,7 +38,7 @@ curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # replace with your complete management hostname
-./install-server.sh --domain "$DOMAIN" --version 0.4.1
+./install-server.sh --domain "$DOMAIN" --version 0.4.3
 ```
 
 With either path, open `https://your management hostname`. The Compose path uses the administrator token in `.env`; the installer prints its generated token in the terminal.

@@ -254,14 +254,14 @@ func (s *Store) Heartbeat(ctx context.Context, agentID string, observedRevision 
 	}
 	defer tx.Rollback()
 
-	var desiredRevision int64
-	if err := tx.QueryRowContext(ctx, `SELECT desired_revision FROM agents WHERE id = ?`, agentID).Scan(&desiredRevision); errors.Is(err, sql.ErrNoRows) {
+	var desiredRevision, currentObservedRevision int64
+	if err := tx.QueryRowContext(ctx, `SELECT desired_revision, observed_revision FROM agents WHERE id = ?`, agentID).Scan(&desiredRevision, &currentObservedRevision); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return fmt.Errorf("get heartbeat revision: %w", err)
 	}
-	if observedRevision < 0 || observedRevision > desiredRevision {
-		return fmt.Errorf("%w: observed revision %d is outside [0, %d]", ErrInvalid, observedRevision, desiredRevision)
+	if observedRevision < currentObservedRevision || observedRevision < 0 || observedRevision > desiredRevision {
+		return fmt.Errorf("%w: observed revision %d is outside [%d, %d]", ErrInvalid, observedRevision, currentObservedRevision, desiredRevision)
 	}
 	for _, observation := range observations {
 		if observation.ObservedRevision < 0 || observation.ObservedRevision > desiredRevision {

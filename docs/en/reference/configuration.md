@@ -37,7 +37,7 @@ The stream edge is enabled by default. It cannot use control/Gateway/TLS-ask, pr
 | `--domain` | required management hostname |
 | `--web-port` / `--ssh-port` | internal administration / public managed-SSH port |
 | `--http-port` / `--https-port` | local primary edges; public 80 must still forward to HTTP |
-| `--version` | pinned image tag; use an exact version such as `0.4.1` in production |
+| `--version` | pinned image tag; use an exact version such as `0.4.3` in production |
 | `--disable-tcp-edge` | write `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | compatibility flag; v0.4 is enabled by default |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | use with `--enable-tcp-edge` to override the bind IP before first install |
@@ -60,8 +60,12 @@ Stream-edge options reliably define first install. Once an existing `.env` suppl
 | `TM_SSH_IDENTITY_FILE` | none | private key; legacy `TM_SSH_PRIVATE_KEY_PATH` accepted |
 | `TM_SSH_PUBLIC_KEY_FILE` | empty | key uploaded to Server; easy installer explicitly sets its generated `.pub` path |
 | `TM_SSH_KNOWN_HOSTS_FILE` | none | pinned Server key; legacy `TM_SSH_KNOWN_HOSTS_PATH` accepted |
-| `TM_SSH_CONTROL_PATH` | `/tmp/portloom-%C.sock` | ControlMaster socket |
+| `TM_SSH_CONTROL_PATH` | `/tmp/portloom/%C.sock` | Linux ControlMaster socket; its direct parent must be owned by the Agent UID, mode `0700`, with no symlink anywhere in the ancestor chain |
 | `TM_SSH_CONNECT_TIMEOUT` | `10` | OpenSSH connect timeout in seconds |
 | `TM_MANAGED_SSH_READY_PATH` / `TM_MANAGED_SSH_READY_NONCE` | `/data/managed-ssh.ready` / empty | installer managed-SSH readiness handshake |
 | `TM_MANAGED_SSH_ISOLATED` | `false` | Agent-side isolated-binding negotiation; requires the public-key file |
 | `TM_ALLOW_INSECURE_HTTP` | `false` | only localhost, 127.0.0.0/8, or `::1` development URLs |
+
+The secure ControlMaster implementation runs on Linux only. For a custom `TM_SSH_CONTROL_PATH`, the Agent creates a missing direct parent with mode `0700`, but that directory's parent must already exist. An existing direct parent must be owned by the Agent runtime UID with exactly mode `0700`. Every ancestor from its parent to the filesystem root must be a real directory owned by root or the Agent UID; a group/other-writable ancestor must have the sticky bit (standard `/tmp` qualifies), and a symlink at any level is rejected. Consequently, paths such as `/tmp/foo.sock` and common `/var/run/...` symlink paths are not accepted.
+
+When upgrading from an earlier release, default Docker Compose installations need no migration: replacing the container terminates its SSH children and the old `/tmp` is not persistent. If the Agent runs directly, or `TM_SSH_CONTROL_PATH` was customized to `/tmp/*.sock`, use the old path to run `ssh -S <old-path> -O exit ...` and confirm the old master has exited before upgrading. Remove a stale socket only after verifying it belongs to the Agent UID, then switch to a private directory satisfying the rules above. Never change paths while the old master is still running.

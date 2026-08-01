@@ -1,12 +1,17 @@
 package agent
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestLoadConfigReadsAndValidatesEnvironment(t *testing.T) {
-	env := map[string]string{"TM_SERVER_URL": "https://manager.example.com/", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "secret-token", "TM_POLL_INTERVAL": "15s", "TM_HEALTH_TIMEOUT": "2s", "TM_REQUEST_TIMEOUT": "9s", "TM_SSH_USER": "tunnel-agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_PORT": "2222", "TM_SSH_IDENTITY_FILE": "/run/secrets/agent_key", "TM_SSH_KNOWN_HOSTS_FILE": "/etc/portloom/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/portloom-%C.sock"}
+	env := map[string]string{"TM_SERVER_URL": "https://manager.example.com/", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "secret-token", "TM_POLL_INTERVAL": "15s", "TM_HEALTH_TIMEOUT": "2s", "TM_REQUEST_TIMEOUT": "9s", "TM_SSH_USER": "tunnel-agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_PORT": "2222", "TM_SSH_IDENTITY_FILE": "/run/secrets/agent_key", "TM_SSH_KNOWN_HOSTS_FILE": "/etc/portloom/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/portloom-config-test/%C.sock"}
+	controlDirectory := filepath.Join(t.TempDir(), "not-created-by-validation")
+	env["TM_SSH_CONTROL_PATH"] = filepath.Join(controlDirectory, "%C.sock")
 	cfg, err := LoadConfig(func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -20,6 +25,9 @@ func TestLoadConfigReadsAndValidatesEnvironment(t *testing.T) {
 	if cfg.SSH.Port != 2222 || cfg.SSH.Host != "gateway.example.com" {
 		t.Fatalf("ssh=%#v", cfg.SSH)
 	}
+	if _, err := os.Stat(controlDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("configuration validation created runtime directory: %v", err)
+	}
 }
 func TestLoadConfigSupportsDeploymentEnvironmentAliases(t *testing.T) {
 	env := map[string]string{"TM_SERVER_URL": "https://manager.example.com", "TM_CLIENT_NAME": "nas-home", "TM_ENROLLMENT_TOKEN": "enroll-token", "TM_HEARTBEAT_INTERVAL": "11s", "TM_SSH_USER": "tunnel", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_PRIVATE_KEY_PATH": "/key", "TM_SSH_KNOWN_HOSTS_PATH": "/known_hosts"}
@@ -30,13 +38,13 @@ func TestLoadConfigSupportsDeploymentEnvironmentAliases(t *testing.T) {
 	if cfg.ClientName != "nas-home" || cfg.EnrollmentToken != "enroll-token" || cfg.ClientID != "" || cfg.Token != "" || cfg.PollInterval != 11*time.Second {
 		t.Fatalf("cfg=%#v", cfg)
 	}
-	if cfg.SSH.IdentityFile != "/key" || cfg.SSH.KnownHostsFile != "/known_hosts" || cfg.SSH.ControlPath != "/tmp/portloom-%C.sock" {
+	if cfg.SSH.IdentityFile != "/key" || cfg.SSH.KnownHostsFile != "/known_hosts" || cfg.SSH.ControlPath != "/tmp/portloom/%C.sock" {
 		t.Fatalf("ssh=%#v", cfg.SSH)
 	}
 }
 
 func TestLoadConfigRejectsMissingSecretsAndNonHTTPURL(t *testing.T) {
-	base := map[string]string{"TM_SERVER_URL": "https://manager.example.com", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token", "TM_SSH_USER": "agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/key", "TM_SSH_KNOWN_HOSTS_FILE": "/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/control.sock"}
+	base := map[string]string{"TM_SERVER_URL": "https://manager.example.com", "TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token", "TM_SSH_USER": "agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/key", "TM_SSH_KNOWN_HOSTS_FILE": "/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/portloom-config-test/%C.sock"}
 	mutations := []func(map[string]string){func(v map[string]string) { v["TM_AGENT_TOKEN"] = "" }, func(v map[string]string) { v["TM_SERVER_URL"] = "file:///etc/passwd" }, func(v map[string]string) { v["TM_SERVER_URL"] = "https://user:pass@example.com" }}
 	for _, mutate := range mutations {
 		values := map[string]string{}
@@ -51,7 +59,7 @@ func TestLoadConfigRejectsMissingSecretsAndNonHTTPURL(t *testing.T) {
 }
 
 func TestLoadConfigRequiresHTTPSUnlessExplicitlyAllowedForLoopback(t *testing.T) {
-	base := map[string]string{"TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token", "TM_SSH_USER": "agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/key", "TM_SSH_KNOWN_HOSTS_FILE": "/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/control.sock"}
+	base := map[string]string{"TM_CLIENT_ID": "nas-01", "TM_AGENT_TOKEN": "token", "TM_SSH_USER": "agent", "TM_SSH_HOST": "gateway.example.com", "TM_SSH_IDENTITY_FILE": "/key", "TM_SSH_KNOWN_HOSTS_FILE": "/known_hosts", "TM_SSH_CONTROL_PATH": "/tmp/portloom-config-test/%C.sock"}
 	tests := []struct {
 		name, serverURL, allow string
 		wantErr                bool

@@ -2,6 +2,7 @@
 /dist/
 /data/
 /node_modules/
+/.vitepress/cache/
 /docs/.vitepress/cache/
 /docs/.vitepress/dist/
 /docs/public/examples/

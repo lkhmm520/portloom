@@ -19,10 +19,26 @@ type fakeRunner struct {
 	addErr         error
 	checkErr       error
 	cancelErr      error
+	closeErr       error
+	closeCalls     int
+	masterPresent  bool
 }
 
-func (r *fakeRunner) EnsureMaster(context.Context) error { r.masters++; return nil }
-func (r *fakeRunner) CheckMaster(context.Context) error  { r.checks++; return r.checkErr }
+func (r *fakeRunner) EnsureMaster(context.Context) error {
+	r.masters++
+	r.masterPresent = true
+	return nil
+}
+func (r *fakeRunner) CheckMaster(context.Context) error {
+	r.checks++
+	if r.checkErr != nil {
+		return r.checkErr
+	}
+	if !r.masterPresent {
+		return errors.New("control socket is not running")
+	}
+	return nil
+}
 func (r *fakeRunner) Forward(_ context.Context, f sshctl.Forward) error {
 	r.added = append(r.added, f)
 	return r.addErr
@@ -31,7 +47,13 @@ func (r *fakeRunner) Cancel(_ context.Context, f sshctl.Forward) error {
 	r.removed = append(r.removed, f)
 	return r.cancelErr
 }
-func (r *fakeRunner) Close(context.Context) error { return nil }
+func (r *fakeRunner) Close(context.Context) error {
+	r.closeCalls++
+	if r.closeErr == nil {
+		r.masterPresent = false
+	}
+	return r.closeErr
+}
 
 type fakeChecker struct{ errors map[string]error }
 
@@ -65,6 +87,18 @@ func TestReconcilerStartsHealthyEnabledRouteOnlyOnce(t *testing.T) {
 		t.Fatalf("restarted: master=%d added=%d", r.masters, len(r.added))
 	}
 }
+func TestReconcilerUsesVerifiedMasterOnFirstSync(t *testing.T) {
+	r := &fakeRunner{masterPresent: true}
+	x := NewReconciler(r, fakeChecker{}, WithMasterReady())
+	o := x.Reconcile(context.Background(), DesiredState{Revision: 1, Routes: []domain.Route{testRoute()}})
+	if o.Routes[0].TunnelStatus != StatusUp {
+		t.Fatalf("observed=%#v", o)
+	}
+	if r.checks != 1 || r.masters != 0 || len(r.added) != 1 {
+		t.Fatalf("checks=%d masters=%d added=%d", r.checks, r.masters, len(r.added))
+	}
+}
+
 func TestReconcilerCancelsChangedAndDisabledRoutes(t *testing.T) {
 	r := &fakeRunner{}
 	x := NewReconciler(r, fakeChecker{})
@@ -112,13 +146,33 @@ func TestReconcilerRebuildsActiveRoutesWhenControlMasterDisconnects(t *testing.T
 	x.Reconcile(context.Background(), desired)
 	r.checkErr = errors.New("control socket is gone")
 	observed := x.Reconcile(context.Background(), desired)
-	if r.checks != 1 || r.masters != 2 || len(r.added) != 2 {
-		t.Fatalf("checks=%d masters=%d added=%d", r.checks, r.masters, len(r.added))
+	if r.checks != 1 || r.closeCalls != 1 || r.masters != 2 || len(r.added) != 2 {
+		t.Fatalf("checks=%d closes=%d masters=%d added=%d", r.checks, r.closeCalls, r.masters, len(r.added))
 	}
 	if observed.Routes[0].TunnelStatus != StatusUp {
 		t.Fatalf("observed=%#v", observed)
 	}
 }
+func TestReconcilerDoesNotAssumeRoutesClosedWhenMasterCleanupFails(t *testing.T) {
+	r := &fakeRunner{}
+	x := NewReconciler(r, fakeChecker{})
+	route := testRoute()
+	first := x.Reconcile(context.Background(), DesiredState{Revision: 1, Routes: []domain.Route{route}})
+	if first.Revision != 1 {
+		t.Fatalf("first=%#v", first)
+	}
+	r.checkErr = errors.New("control socket is unresponsive")
+	r.closeErr = errors.New("unable to confirm master termination")
+	route.Enabled = false
+	failed := x.Reconcile(context.Background(), DesiredState{Revision: 2, Routes: []domain.Route{route}})
+	if failed.Revision != 1 || len(failed.Routes) != 1 || failed.Routes[0].TunnelStatus != StatusError {
+		t.Fatalf("failed=%#v", failed)
+	}
+	if len(r.removed) != 0 || r.masters != 1 || r.closeCalls != 1 {
+		t.Fatalf("removed=%d masters=%d closes=%d", len(r.removed), r.masters, r.closeCalls)
+	}
+}
+
 func TestReconcilerDoesNotConvergeRevisionWhenCancelFails(t *testing.T) {
 	r := &fakeRunner{}
 	x := NewReconciler(r, fakeChecker{})

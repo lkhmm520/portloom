@@ -65,8 +65,8 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
     def test_beginner_template_is_repeatable_pinned_and_token_safe(self):
         compose = (ROOT / "examples" / "compose.yml").read_text()
         env_template = (ROOT / "examples" / "compose.env.example").read_text()
-        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.4.1", compose)
-        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.4.1", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.4.3", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.4.3", compose)
         self.assertNotIn(":latest", compose)
         self.assertIn("./data/server:/data", compose)
         self.assertIn("./data/ssh-auth:/auth", compose)
@@ -103,15 +103,29 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
         self.assertTrue(conflict_guard.exists())
 
     def test_current_install_and_upgrade_commands_use_current_patch_version(self):
-        for relative in [
+        current_pages = [
+            "docs/guide/quick-start.md",
+            "docs/en/guide/quick-start.md",
+            "docs/guide/compose-install.md",
+            "docs/en/guide/compose-install.md",
+            "docs/install/docker.md",
+            "docs/en/install/docker.md",
             "docs/install/production.md",
             "docs/en/install/production.md",
             "docs/operations/backup-upgrade.md",
             "docs/en/operations/backup-upgrade.md",
-        ]:
+            "docs/operations/release-checklist.md",
+            "docs/en/operations/release-checklist.md",
+            "docs/reference/configuration.md",
+            "docs/en/reference/configuration.md",
+        ]
+        for relative in current_pages:
             text = (ROOT / relative).read_text()
             with self.subTest(path=relative):
-                self.assertNotIn("--version 0.4.0", text)
+                self.assertIn("0.4.3", text)
+                self.assertNotIn("0.4.0", text)
+                self.assertNotIn("0.4.1", text)
+                self.assertNotIn("0.4.2", text)
 
     def test_public_copy_does_not_imply_a_required_portloom_subdomain(self):
         public_files = [ROOT / "README.md", ROOT / "README.en.md", ROOT / "web" / "index.html"]

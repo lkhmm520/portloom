@@ -51,7 +51,7 @@ func LoadConfig(getenv EnvLookup) (Config, error) {
 			Port:           22,
 			IdentityFile:   firstNonEmpty(getenv("TM_SSH_IDENTITY_FILE"), getenv("TM_SSH_PRIVATE_KEY_PATH")),
 			KnownHostsFile: firstNonEmpty(getenv("TM_SSH_KNOWN_HOSTS_FILE"), getenv("TM_SSH_KNOWN_HOSTS_PATH")),
-			ControlPath:    firstNonEmpty(getenv("TM_SSH_CONTROL_PATH"), "/tmp/portloom-%C.sock"),
+			ControlPath:    firstNonEmpty(getenv("TM_SSH_CONTROL_PATH"), "/tmp/portloom/%C.sock"),
 			ConnectTimeout: 10,
 		},
 	}
@@ -151,7 +151,7 @@ func (c Config) Validate() error {
 	if c.PollInterval <= 0 || c.HealthTimeout <= 0 || c.RequestTimeout <= 0 {
 		return errors.New("agent durations must be positive")
 	}
-	if _, err := sshctl.NewOpenSSHRunner(c.SSH); err != nil {
+	if err := sshctl.ValidateConfig(c.SSH); err != nil {
 		return fmt.Errorf("invalid SSH configuration: %w", err)
 	}
 	return nil

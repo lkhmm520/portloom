@@ -35,6 +35,10 @@ func WithRemoteBindHost(host string) ReconcilerOption {
 	return func(reconciler *Reconciler) { reconciler.remoteBindHost = host }
 }
 
+func WithMasterReady() ReconcilerOption {
+	return func(reconciler *Reconciler) { reconciler.masterReady = true }
+}
+
 func NewReconciler(runner SSHRunner, checker HealthChecker, options ...ReconcilerOption) *Reconciler {
 	reconciler := &Reconciler{runner: runner, checker: checker, remoteBindHost: "127.0.0.1",
 		active: map[string]sshctl.Forward{}, relays: map[string]*udpRelay{}}
@@ -53,7 +57,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 	seen := map[string]bool{}
 
 	if r.masterReady {
-		if err := r.runner.CheckMaster(ctx); err != nil {
+		if checkErr := r.runner.CheckMaster(ctx); checkErr != nil {
+			if closeErr := r.runner.Close(ctx); closeErr != nil {
+				message := fmt.Sprintf("SSH ControlMaster state is unknown: check failed: %v; close failed: %v", checkErr, closeErr)
+				return r.masterFailureObserved(desired, observed, message)
+			}
 			r.masterReady = false
 			clear(r.active)
 		}
@@ -189,6 +197,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 	}
 	return observed
 }
+func (r *Reconciler) masterFailureObserved(desired DesiredState, observed ObservedState, message string) ObservedState {
+	seen := make(map[string]bool, len(desired.Routes))
+	for _, route := range desired.Routes {
+		if route.ID == "" || seen[route.ID] {
+			continue
+		}
+		seen[route.ID] = true
+		observed.Routes = append(observed.Routes, RouteObservation{
+			RouteID: route.ID, LocalStatus: StatusError, TunnelStatus: StatusError, Error: message,
+		})
+	}
+	for id := range r.active {
+		if !seen[id] {
+			observed.Routes = append(observed.Routes, RouteObservation{
+				RouteID: id, LocalStatus: StatusError, TunnelStatus: StatusError, Error: message,
+			})
+		}
+	}
+	return observed
+}
+
 func (r *Reconciler) cancel(ctx context.Context, id string) error {
 	forward, ok := r.active[id]
 	if !ok {

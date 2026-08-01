@@ -488,7 +488,7 @@ func (s *server) heartbeatAgent(w http.ResponseWriter, r *http.Request, agent do
 		return
 	}
 	if request.System != nil && s.config.AgentSystemInfo != nil {
-		s.config.AgentSystemInfo.Record(agent.ID, *request.System)
+		s.config.AgentSystemInfo.Record(agent.ID, request.ObservedRevision, *request.System)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -507,9 +507,6 @@ func (s *server) observedAgent(w http.ResponseWriter, r *http.Request, agent dom
 	if err := decodeJSON(w, r, &request); err != nil {
 		return
 	}
-	if request.System != nil && s.config.AgentSystemInfo != nil {
-		s.config.AgentSystemInfo.Record(agent.ID, *request.System)
-	}
 	observations := make([]domain.RouteObservation, 0, len(request.Routes))
 	for _, route := range request.Routes {
 		observations = append(observations, domain.RouteObservation{
@@ -520,6 +517,9 @@ func (s *server) observedAgent(w http.ResponseWriter, r *http.Request, agent dom
 	if err := s.store.Heartbeat(r.Context(), agent.ID, request.Revision, observations); err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if request.System != nil && s.config.AgentSystemInfo != nil {
+		s.config.AgentSystemInfo.Record(agent.ID, request.Revision, *request.System)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

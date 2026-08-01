@@ -11,7 +11,7 @@ This page is for maintainers. A v0.4 release cannot be accepted by testing only 
 
 ## Artifacts and clean install
 
-Set `VERSION` to the exact v0.4 release candidate (for example `0.4.1`) first. Every image, install command, and runtime version below must use that same value.
+Set `VERSION` to the exact v0.4 release candidate (for example `0.4.3`) first. Every image, install command, and runtime version below must use that same value.
 
 - [ ] Both public installer URLs return 200, non-empty scripts, and pass `bash -n`.
 - [ ] All four `$VERSION` images exist, and dual-architecture revisions match the tag commit.
@@ -34,7 +34,7 @@ Set `VERSION` to the exact v0.4 release candidate (for example `0.4.1`) first. E
 
 ## Upgrade and rollback
 
-- [ ] Upgrade a v0.3.x database to current v0.4.1 and verify legacy `http` becomes `https` with unchanged old public behavior.
+- [ ] Upgrade a v0.3.x database to current v0.4.3 and verify legacy `http` becomes `https` with unchanged old public behavior.
 - [ ] Save consistent `server-data` before upgrade because config backup excludes the database.
 - [ ] A failed Server version restores old config/image IDs automatically.
 - [ ] Complete a real v0.3.x rollback with the pre-upgrade database.

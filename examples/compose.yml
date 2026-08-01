@@ -2,7 +2,7 @@ name: portloom-server
 
 services:
   state-init:
-    image: ghcr.io/lkhmm520/portloom-sshd:0.4.1
+    image: ghcr.io/lkhmm520/portloom-sshd:0.4.3
     user: "0:0"
     network_mode: none
     entrypoint: [/bin/sh, -c]
@@ -21,7 +21,7 @@ services:
     restart: "no"
 
   sshd:
-    image: ghcr.io/lkhmm520/portloom-sshd:0.4.1
+    image: ghcr.io/lkhmm520/portloom-sshd:0.4.3
     container_name: portloom-sshd
     restart: unless-stopped
     network_mode: host
@@ -41,7 +41,7 @@ services:
     cap_add: [SETUID, SETGID, SYS_CHROOT]
 
   server:
-    image: ghcr.io/lkhmm520/portloom-server:0.4.1
+    image: ghcr.io/lkhmm520/portloom-server:0.4.3
     container_name: portloom-server
     restart: unless-stopped
     network_mode: host

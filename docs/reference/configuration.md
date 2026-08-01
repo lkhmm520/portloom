@@ -37,7 +37,7 @@ stream edge 默认开启。其端口不能占用管理/Gateway/TLS ask、主 edg
 | `--domain` | 必填管理域名 |
 | `--web-port` / `--ssh-port` | 内部管理端口 / 公网受管 SSH 端口 |
 | `--http-port` / `--https-port` | 本机主 edge 端口；公网 80 仍须转发到 HTTP 端口 |
-| `--version` | 固定镜像 Tag；生产建议 `0.4.1` 等精确版本 |
+| `--version` | 固定镜像 Tag；生产建议 `0.4.3` 等精确版本 |
 | `--disable-tcp-edge` | 写入 `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | 兼容参数；v0.4 默认已启用 |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | 与 `--enable-tcp-edge` 同时使用，在首次安装前覆盖 bind IP |
@@ -60,8 +60,12 @@ stream-edge 参数可靠地定义首次安装。从已有 `.env` 读取到非空
 | `TM_SSH_IDENTITY_FILE` | 无 | 私钥；旧名 `TM_SSH_PRIVATE_KEY_PATH` 兼容 |
 | `TM_SSH_PUBLIC_KEY_FILE` | 空 | 上传给 Server 的公钥；简易安装器显式设置生成的 `.pub` 路径 |
 | `TM_SSH_KNOWN_HOSTS_FILE` | 无 | 固定 Server 主机公钥；旧名 `TM_SSH_KNOWN_HOSTS_PATH` 兼容 |
-| `TM_SSH_CONTROL_PATH` | `/tmp/portloom-%C.sock` | ControlMaster socket |
+| `TM_SSH_CONTROL_PATH` | `/tmp/portloom/%C.sock` | Linux ControlMaster socket；直接父目录必须由 Agent UID 所有、权限为 `0700`，且整个祖先链不能包含符号链接 |
 | `TM_SSH_CONNECT_TIMEOUT` | `10` | OpenSSH 连接超时秒数 |
 | `TM_MANAGED_SSH_READY_PATH` / `TM_MANAGED_SSH_READY_NONCE` | `/data/managed-ssh.ready` / 空 | 安装器受管 SSH 就绪握手 |
 | `TM_MANAGED_SSH_ISOLATED` | `false` | Agent 侧隔离绑定协商；需要公钥文件 |
 | `TM_ALLOW_INSECURE_HTTP` | `false` | 只允许 localhost/127.0.0.0/8/`::1` 开发地址 |
+
+Agent 仅在 Linux 上运行此安全 ControlMaster 实现。自定义 `TM_SSH_CONTROL_PATH` 时，直接父目录不存在则由 Agent 自动以 `0700` 创建，但它的上一级必须已经存在。已有直接父目录必须由 Agent 运行 UID 所有且恰为 `0700`。从该上级到根目录的每一级都必须是真实目录、由 root 或 Agent UID 所有；group/other 可写的祖先必须带 sticky bit（标准 `/tmp` 符合），任意层级的符号链接都会被拒绝。因此 `/tmp/foo.sock` 和常见的 `/var/run/...` 符号链接路径都不被接受。
+
+从早期版本升级时，默认 Docker Compose 安装无需迁移：替换容器会终止旧容器内的 SSH 子进程，旧 `/tmp` 也不会持久化。若直接运行 Agent，或曾把 `TM_SSH_CONTROL_PATH` 自定义为 `/tmp/*.sock`，升级前必须先用旧路径执行 `ssh -S <旧路径> -O exit ...` 并确认旧 master 已退出；仅在核实残留 socket 属于 Agent UID 后清理它，再切换到满足上述规则的私有目录。不要在旧 master 仍运行时直接改路径。

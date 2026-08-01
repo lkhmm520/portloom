@@ -36,7 +36,7 @@ curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # 改成你选定的完整管理域名
-./install-server.sh --domain "$DOMAIN" --version 0.4.1
+./install-server.sh --domain "$DOMAIN" --version 0.4.3
 ```
 
 安装器会生成：
@@ -91,11 +91,11 @@ docker compose --env-file .env -f compose.yml logs --tail=100 server sshd
 DOMAIN='example.com'
 
 # 主 edge 改成本机 8088/8443；公网 80 仍必须转发到 8088
-./install-server.sh --domain "$DOMAIN" --version 0.4.1 \
+./install-server.sh --domain "$DOMAIN" --version 0.4.3 \
   --http-port 8088 --https-port 8443
 
 # 首次安装时不发布 TCP/UDP
-./install-server.sh --domain "$DOMAIN" --version 0.4.1 \
+./install-server.sh --domain "$DOMAIN" --version 0.4.3 \
   --disable-tcp-edge
 ```
 
@@ -107,7 +107,7 @@ Compose 模板对应修改 `.env` 中的 `TM_EDGE_HTTP_ADDR`、`TM_EDGE_HTTPS_AD
 
 - Compose 模板的数据默认在项目目录的 `data/`；安装器数据默认在 `~/.portloom/server/`。
 - 不要删除 Server 的数据库、证书缓存、SSH host key 或 Agent identity。
-- 新手模板固定经过验证的 Server/sshd `0.4.1`，数据路径也直接固定在项目的 `./data/`；升级前备份完整项目，再显式修改 `compose.yml` 中的两个版本。
+- 新手模板固定经过验证的 Server/sshd `0.4.3`，数据路径也直接固定在项目的 `./data/`；升级前备份完整项目，再显式修改 `compose.yml` 中的两个版本。
 - 安装器升级会固定不可变镜像并自动回滚；Compose 手动升级由你负责备份、改 Tag、`pull`、`up -d` 和健康验证。
 - 当前 Agent 安装器不支持在已有目录内跨版本升级；不要通过删除密钥或 identity 强行升级。
 

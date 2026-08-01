@@ -42,6 +42,13 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	if err != nil {
 		return fmt.Errorf("create SSH runner: %w", err)
 	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := runner.Close(closeCtx); closeErr != nil {
+			log.Printf("SSH ControlMaster close failed: %v", closeErr)
+		}
+	}()
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
 	credentials, err := agent.ResolveCredentials(ctx, cfg, httpClient)
 	if err != nil {
@@ -77,11 +84,5 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	if err := agent.MarkManagedSSHReady(cfg.ManagedSSHReadyPath, cfg.ManagedSSHReadyNonce); err != nil {
 		return fmt.Errorf("mark Agent ready: %w", err)
 	}
-	err = syncer.Run(ctx, cfg.PollInterval, func(syncErr error) { log.Printf("agent synchronization failed: %v", syncErr) })
-	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if closeErr := runner.Close(closeCtx); closeErr != nil {
-		log.Printf("SSH ControlMaster close failed: %v", closeErr)
-	}
-	return err
+	return syncer.Run(ctx, cfg.PollInterval, func(syncErr error) { log.Printf("agent synchronization failed: %v", syncErr) })
 }

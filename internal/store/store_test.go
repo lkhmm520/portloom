@@ -478,7 +478,7 @@ func TestHeartbeatRejectsRouteObservationOutsideAgentDesiredRange(t *testing.T) 
 	}
 }
 
-func TestHeartbeatStaleRouteObservationCannotOverwriteNewerStatus(t *testing.T) {
+func TestHeartbeatRejectsStaleAgentRevisionWithoutRefreshingFreshness(t *testing.T) {
 	ctx := context.Background()
 	s, agent := enrolledStore(t, 32200, 32201)
 	route, err := s.CreateRoute(ctx, domain.Route{
@@ -497,27 +497,34 @@ func TestHeartbeatStaleRouteObservationCannotOverwriteNewerStatus(t *testing.T) 
 	}
 	if err := s.Heartbeat(ctx, agent.ID, 2, []domain.RouteObservation{{
 		RouteID: route.ID, ObservedRevision: 2,
-		LocalStatus: "down", TunnelStatus: "down", LastError: "new status",
+		LocalStatus: "healthy", TunnelStatus: "up",
 	}}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := time.Now().UTC().Add(-2 * domain.AgentHeartbeatFreshness).Round(0)
+	if _, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = ? WHERE id = ?`, formatTime(baseline), agent.ID); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := s.Heartbeat(ctx, agent.ID, 1, []domain.RouteObservation{{
 		RouteID: route.ID, ObservedRevision: 1,
-		LocalStatus: "healthy", TunnelStatus: "up", LastError: "stale status",
-	}}); err != nil {
-		t.Fatal(err)
+		LocalStatus: "down", TunnelStatus: "down", LastError: "stale status",
+	}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("stale heartbeat error = %v, want ErrInvalid", err)
 	}
 	state, routes, err := s.SyncAgent(ctx, agent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ObservedRevision != 2 {
-		t.Fatalf("agent observed revision = %d, want 2", state.ObservedRevision)
+	if state.ObservedRevision != 2 || !state.LastSeenAt.Equal(baseline) {
+		t.Fatalf("stale heartbeat changed agent freshness: %+v, baseline=%s", state, baseline)
 	}
 	got := routes[0]
-	if got.ObservedRevision != 2 || got.LocalStatus != "down" || got.TunnelStatus != "down" || got.LastError != "new status" {
+	if got.ObservedRevision != 2 || got.LocalStatus != "healthy" || got.TunnelStatus != "up" || got.LastError != "" {
 		t.Fatalf("stale heartbeat overwrote route state: %+v", got)
+	}
+	if got.PublicationReadyAt(time.Now().UTC()) {
+		t.Fatalf("stale heartbeat kept route publication ready: %+v", got)
 	}
 }
 

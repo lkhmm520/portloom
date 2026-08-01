@@ -134,7 +134,7 @@ Agent 出现在 WebUI 后，按[五分钟快速开始](/guide/quick-start#_4-添
 
 ## 数据、重启和升级
 
-- 模板已固定经过验证的 Server/sshd `0.4.1` 镜像和项目内 `./data/` 路径，避免 Shell 环境变量静默改变镜像或数据源。高级定制应直接审查并修改 `compose.yml`。
+- 模板已固定经过验证的 Server/sshd `0.4.3` 镜像和项目内 `./data/` 路径，避免 Shell 环境变量静默改变镜像或数据源。高级定制应直接审查并修改 `compose.yml`。
 - 专用项目目录保持 `0711`，让 NAS/FUSE 路径上的非 root 容器可以遍历；私密 `.env` 保持 `0600`。不要把这些权限套到整个家目录。
 - 日常只重启长驻服务：`docker compose restart server sshd`。配置或镜像变化使用 `docker compose up -d`，不要单独重启一次性 `state-init`。
 - 不要用临时 `docker run`、不要删除数据目录后重建。

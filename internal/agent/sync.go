@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -21,7 +23,12 @@ type Syncer struct {
 	reconciler       StateReconciler
 	stats            func() sysinfo.Stats
 	observedRevision int64
+	acceptedDesired  DesiredState
+	hasAccepted      bool
 	cachedDesired    DesiredState
+	cachedDesiredAt  time.Time
+	desiredCacheTTL  time.Duration
+	now              func() time.Time
 	hasCachedDesired bool
 }
 
@@ -33,8 +40,30 @@ func WithSystemStats(stats func() sysinfo.Stats) SyncerOption {
 	return func(syncer *Syncer) { syncer.stats = stats }
 }
 
+// WithDesiredCacheTTL bounds how long cached control-plane intent may be used
+// for local tunnel repair while desired-state fetches are temporarily failing.
+func WithDesiredCacheTTL(ttl time.Duration) SyncerOption {
+	return func(syncer *Syncer) {
+		if ttl > 0 {
+			syncer.desiredCacheTTL = ttl
+		}
+	}
+}
+
+func withSyncerClock(now func() time.Time) SyncerOption {
+	return func(syncer *Syncer) {
+		if now != nil {
+			syncer.now = now
+		}
+	}
+}
+
 func NewSyncer(client ServerClient, reconciler StateReconciler, options ...SyncerOption) *Syncer {
-	syncer := &Syncer{client: client, reconciler: reconciler}
+	syncer := &Syncer{
+		client: client, reconciler: reconciler,
+		desiredCacheTTL: 2 * time.Minute,
+		now:             time.Now,
+	}
 	for _, option := range options {
 		if option != nil {
 			option(syncer)
@@ -47,16 +76,34 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	defer s.mu.Unlock()
 	desired, err := s.client.FetchDesired(ctx, s.observedRevision)
 	if err != nil {
+		fetchErr := fmt.Errorf("fetch desired state: %w", err)
 		recoverable := recoverableFetchError(err)
 		if recoverable && s.hasCachedDesired && ctx.Err() == nil {
-			s.reconciler.Reconcile(ctx, s.cachedDesired)
-		} else if !recoverable && ctx.Err() == nil {
+			age := s.now().Sub(s.cachedDesiredAt)
+			if age < 0 {
+				age = 0
+			}
+			if age <= s.desiredCacheTTL {
+				observed := s.reconciler.Reconcile(ctx, s.cachedDesired)
+				return errors.Join(fetchErr, cachedReconcileError(observed))
+			}
 			s.cachedDesired = DesiredState{}
+			s.cachedDesiredAt = time.Time{}
+			s.hasCachedDesired = false
+			return errors.Join(fetchErr, fmt.Errorf("cached desired state expired after %s", age.Round(time.Second)))
+		}
+		if !recoverable && ctx.Err() == nil {
+			s.cachedDesired = DesiredState{}
+			s.cachedDesiredAt = time.Time{}
 			s.hasCachedDesired = false
 		}
-		return fmt.Errorf("fetch desired state: %w", err)
+		return fetchErr
+	}
+	if err := s.acceptDesired(desired); err != nil {
+		return err
 	}
 	s.cachedDesired = desired
+	s.cachedDesiredAt = s.now()
 	s.hasCachedDesired = true
 	observed := s.reconciler.Reconcile(ctx, desired)
 	if s.stats != nil {
@@ -68,6 +115,57 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 	s.observedRevision = observed.Revision
 	return nil
+}
+
+func normalizedDesiredExecution(desired DesiredState) DesiredState {
+	desired.Routes = slices.Clone(desired.Routes)
+	for index := range desired.Routes {
+		route := &desired.Routes[index]
+		route.ObservedRevision = 0
+		route.LocalStatus = ""
+		route.TunnelStatus = ""
+		route.LastError = ""
+		route.AgentLastSeenAt = time.Time{}
+		route.PublicStatus = ""
+		route.CreatedAt = time.Time{}
+		route.UpdatedAt = time.Time{}
+	}
+	return desired
+}
+
+func (s *Syncer) acceptDesired(desired DesiredState) error {
+	if desired.Revision < 0 {
+		return fmt.Errorf("desired revision must not be negative: %d", desired.Revision)
+	}
+	normalized := normalizedDesiredExecution(desired)
+	if s.hasAccepted {
+		switch {
+		case desired.Revision < s.acceptedDesired.Revision:
+			return fmt.Errorf("desired revision rollback from %d to %d", s.acceptedDesired.Revision, desired.Revision)
+		case desired.Revision == s.acceptedDesired.Revision && !reflect.DeepEqual(normalized, s.acceptedDesired):
+			return fmt.Errorf("desired state changed without revision advance: %d", desired.Revision)
+		case desired.Revision == s.acceptedDesired.Revision:
+			return nil
+		}
+	}
+	s.acceptedDesired = normalized
+	s.hasAccepted = true
+	return nil
+}
+
+func cachedReconcileError(observed ObservedState) error {
+	var routeErrors []error
+	for _, route := range observed.Routes {
+		if route.Error == "" && route.TunnelStatus != StatusError && route.LocalStatus != StatusError {
+			continue
+		}
+		message := route.Error
+		if message == "" {
+			message = "route reconciliation reported an error status"
+		}
+		routeErrors = append(routeErrors, fmt.Errorf("cached reconcile route %q: %s", route.RouteID, message))
+	}
+	return errors.Join(routeErrors...)
 }
 
 func recoverableFetchError(err error) bool {

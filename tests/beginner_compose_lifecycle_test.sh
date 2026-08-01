@@ -57,8 +57,8 @@ import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 server_image, sshd_image, host_tmp = sys.argv[2:]
 text = path.read_text()
-text = text.replace("ghcr.io/lkhmm520/portloom-server:0.4.1", server_image)
-text = text.replace("ghcr.io/lkhmm520/portloom-sshd:0.4.1", sshd_image)
+text = text.replace("ghcr.io/lkhmm520/portloom-server:0.4.3", server_image)
+text = text.replace("ghcr.io/lkhmm520/portloom-sshd:0.4.3", sshd_image)
 text = text.replace("./data/server:/data", f"{host_tmp}/data/server:/data")
 text = text.replace("./data/ssh-auth:/auth", f"{host_tmp}/data/ssh-auth:/auth")
 text = text.replace("./data/ssh-auth:/ssh-auth", f"{host_tmp}/data/ssh-auth:/ssh-auth")

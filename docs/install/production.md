@@ -28,7 +28,7 @@ TCP/UDP stream edge 与原生 Web edge 独立；只要 `TM_TCP_EDGE_BIND_HOST` �
 ```bash
 curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain example.com --version 0.4.1
+./install-server.sh --domain example.com --version 0.4.3
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
 docker compose --env-file .env -f compose.yml ps
@@ -56,7 +56,7 @@ compose.yml
 
 ## 上线检查
 
-1. `/api/v1/system` 返回 `0.4.1`，并显示预期的 `tcp_edge`、`udp_edge`、`web_port_edge`；
+1. `/api/v1/system` 返回 `0.4.3`，并显示预期的 `tcp_edge`、`udp_edge`、`web_port_edge`；
 2. HTTPS 管理入口与 HTTP 308 跳转正常；
 3. Agent 安装后无一次性令牌仍能重启和心跳；
 4. 分别测试 HTTPS、HTTP、TCP、UDP，以及至少一条路径/自定义端口路由；

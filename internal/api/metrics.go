@@ -18,6 +18,7 @@ type MetricsSource interface {
 type AgentSystem struct {
 	sysinfo.Stats
 	ReportedAt time.Time `json:"reported_at"`
+	revision   int64
 }
 
 // AgentSystemStore keeps the most recent per-agent resource reports in memory.
@@ -30,10 +31,13 @@ func NewAgentSystemStore() *AgentSystemStore {
 	return &AgentSystemStore{agents: map[string]AgentSystem{}}
 }
 
-func (s *AgentSystemStore) Record(agentID string, stats sysinfo.Stats) {
+func (s *AgentSystemStore) Record(agentID string, revision int64, stats sysinfo.Stats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.agents[agentID] = AgentSystem{Stats: stats, ReportedAt: time.Now().UTC()}
+	if current, ok := s.agents[agentID]; ok && revision < current.revision {
+		return
+	}
+	s.agents[agentID] = AgentSystem{Stats: stats, ReportedAt: time.Now().UTC(), revision: revision}
 }
 
 func (s *AgentSystemStore) Snapshot() map[string]AgentSystem {

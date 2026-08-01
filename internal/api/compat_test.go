@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/lkhmm520/portloom/internal/domain"
 )
 
 func TestUIAndAgentCompatibilityEndpoints(t *testing.T) {
@@ -68,6 +72,55 @@ func TestUIAndAgentCompatibilityEndpoints(t *testing.T) {
 	}, credentials.Token)
 	if futureHeartbeat.Code != http.StatusBadRequest {
 		t.Fatalf("future heartbeat status=%d body=%s", futureHeartbeat.Code, futureHeartbeat.Body.String())
+	}
+}
+
+func TestStaleAgentReportsCannotRefreshSystemInfo(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	if err := state.CreateEnrollmentToken(ctx, "stale-system-test", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	agent, agentToken, err := state.ConsumeEnrollmentToken(ctx, "stale-system-test", "nas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, port := range []int{8080, 8081} {
+		if _, err := state.CreateRoute(ctx, domain.Route{
+			ClientID: agent.ID, Name: "route-" + string(rune('a'+index)), Protocol: domain.ProtocolTCP,
+			PublicPort: 45100 + index, LocalHost: "127.0.0.1", LocalPort: port, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	systems := NewAgentSystemStore()
+	handler := New(state, Config{AdminToken: "admin-secret", AgentSystemInfo: systems})
+	accepted := performJSON(t, handler, http.MethodPost, "/api/v1/agent/observed", map[string]any{
+		"revision": 2, "routes": []map[string]any{}, "system": map[string]any{"rss_bytes": 200},
+	}, agentToken)
+	if accepted.Code != http.StatusNoContent {
+		t.Fatalf("accepted status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+
+	staleRequests := []struct {
+		path string
+		body map[string]any
+	}{
+		{path: "/api/v1/agent/observed", body: map[string]any{
+			"revision": 1, "routes": []map[string]any{}, "system": map[string]any{"rss_bytes": 100},
+		}},
+		{path: "/api/v1/agent/heartbeat", body: map[string]any{
+			"observed_revision": 1, "routes": []map[string]any{}, "system": map[string]any{"rss_bytes": 50},
+		}},
+	}
+	for _, request := range staleRequests {
+		response := performJSON(t, handler, http.MethodPost, request.path, request.body, agentToken)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d body=%s", request.path, response.Code, response.Body.String())
+		}
+		if got := systems.Snapshot()[agent.ID].RSSBytes; got != 200 {
+			t.Fatalf("%s stale system report changed RSS to %d", request.path, got)
+		}
 	}
 }
 

@@ -13,22 +13,31 @@ on:
     tags: ['finalize-v*.*.*']
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: finalize-release
   cancel-in-progress: false
 
 jobs:
-  verify-production-and-release:
+  verify-production:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      revision: ${{ steps.release.outputs.revision }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.tag || 'refs/heads/main' }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Validate immutable release tag
         id: release
@@ -83,7 +92,13 @@ jobs:
               [ "$actual_version" = "$VERSION" ] || { echo "$ref linux/$arch version $actual_version != $VERSION" >&2; exit 1; }
             done
           done
-      - name: Verify production documentation and installer digests
+      - name: Verify release Compose pins the exact release tag
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: scripts/verify-release-compose.py --version "$VERSION" examples/compose.yml
+      - name: Verify production documentation, installers, and Compose digests
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           for script in install-server.sh install-agent.sh; do
             matched=false
@@ -100,28 +115,53 @@ jobs:
             [ "$matched" = true ] || { echo "production installer unavailable or stale: ${script}" >&2; exit 1; }
             bash -n "/tmp/${script}"
           done
+          compose_matched=false
+          for _ in $(seq 1 6); do
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              https://docs.look4i.com/examples/compose.yml >/tmp/production-compose.yml; then
+              expected_sha=$(sha256sum examples/compose.yml | cut -d ' ' -f 1)
+              public_sha=$(sha256sum /tmp/production-compose.yml | cut -d ' ' -f 1)
+              if [ "$public_sha" = "$expected_sha" ]; then compose_matched=true; break; fi
+              echo 'production digest not current yet: examples/compose.yml' >&2
+            fi
+            sleep 10
+          done
+          [ "$compose_matched" = true ] || { echo 'production Compose unavailable or stale' >&2; exit 1; }
+          scripts/verify-release-compose.py --version "$VERSION" /tmp/production-compose.yml
           curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://docs.look4i.com/ >/dev/null
+
+  promote-stable-channels:
+    needs: verify-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to GHCR for stable channel promotion
-        if: steps.release.outputs.prerelease == 'false'
+        if: needs.verify-production.outputs.prerelease == 'false'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Preflight stable channels against rollback
-        if: steps.release.outputs.prerelease == 'false'
+        if: needs.verify-production.outputs.prerelease == 'false'
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
-          MAJOR: ${{ steps.release.outputs.major }}
-          MINOR: ${{ steps.release.outputs.minor }}
+          VERSION: ${{ needs.verify-production.outputs.version }}
+          EXPECTED_REVISION: ${{ needs.verify-production.outputs.revision }}
+          MAJOR: ${{ needs.verify-production.outputs.major }}
+          MINOR: ${{ needs.verify-production.outputs.minor }}
         run: |
           for image in server agent sshd docs; do
             repository="lkhmm520/portloom-${image}"
             image_ref="ghcr.io/${repository}"
             token=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
               "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r .token)
-            [ -n "$token" ] && [ "$token" != null ] || { echo 'GHCR returned no pull token' >&2; exit 1; }
+            if [ -z "$token" ] || [ "$token" = null ]; then
+              echo 'GHCR returned no pull token' >&2
+              exit 1
+            fi
             printf -v registry_auth 'Authorization: Bearer %s' "$token"
             for channel in latest "$MAJOR" "$MAJOR.$MINOR"; do
               status=$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
@@ -147,11 +187,11 @@ jobs:
             done
           done
       - name: Promote verified stable release channels
-        if: steps.release.outputs.prerelease == 'false'
+        if: needs.verify-production.outputs.prerelease == 'false'
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          MAJOR: ${{ steps.release.outputs.major }}
-          MINOR: ${{ steps.release.outputs.minor }}
+          VERSION: ${{ needs.verify-production.outputs.version }}
+          MAJOR: ${{ needs.verify-production.outputs.major }}
+          MINOR: ${{ needs.verify-production.outputs.minor }}
         run: |
           for image in server agent sshd docs; do
             repository="ghcr.io/lkhmm520/portloom-${image}"
@@ -167,12 +207,21 @@ jobs:
               [ "$channel_sha" = "$source_sha" ] || { echo "channel ${repository}:${channel} does not match $source" >&2; exit 1; }
             done
           done
+
+  create-release:
+    needs: [verify-production, promote-stable-channels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
       - name: Create or validate idempotent GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          EXPECTED_PRERELEASE: ${{ steps.release.outputs.prerelease }}
-          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify-production.outputs.tag }}
+          EXPECTED_PRERELEASE: ${{ needs.verify-production.outputs.prerelease }}
+          EXPECTED_REVISION: ${{ needs.verify-production.outputs.revision }}
         run: |
           revision_marker="PortLoom-Revision: $EXPECTED_REVISION"
           if state=$(gh release view "$TAG" --json tagName,isDraft,isPrerelease,body 2>/dev/null); then
@@ -188,10 +237,38 @@ jobs:
               gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG"
             fi
           fi
+
+  cleanup-marker:
+    needs: [verify-production, promote-stable-channels, create-release]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
       - name: Clean up the one-shot finalize marker tag
-        if: always() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
         run: |
-          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${GITHUB_REF_NAME}" \
-            || echo "marker tag ${GITHUB_REF_NAME} was already removed"
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --request DELETE \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/refs/tags/${GITHUB_REF_NAME}")
+          case "$status" in
+            204)
+              echo "deleted marker tag ${GITHUB_REF_NAME}"
+              ;;
+            404)
+              echo "marker tag ${GITHUB_REF_NAME} was already removed"
+              ;;
+            *)
+              echo "failed to delete marker tag ${GITHUB_REF_NAME}: HTTP ${status}" >&2
+              cat "$response" >&2
+              exit 1
+              ;;
+          esac

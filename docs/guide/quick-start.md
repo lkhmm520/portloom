@@ -38,7 +38,7 @@ curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 less install-server.sh
 chmod 0700 install-server.sh
 DOMAIN='example.com' # 改成你选定的完整管理域名
-./install-server.sh --domain "$DOMAIN" --version 0.4.1
+./install-server.sh --domain "$DOMAIN" --version 0.4.3
 ```
 
 完成后，两种方式都应能打开 `https://你的管理域名`。Compose 方式使用 `.env` 中的管理员 Token；安装器方式会在终端显示随机 Token。

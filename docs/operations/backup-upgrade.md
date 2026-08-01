@@ -54,7 +54,7 @@ v0.4 首次启动会增加路由字段/索引，并把早期版本的 legacy `ht
 ```bash
 curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain example.com --version 0.4.1
+./install-server.sh --domain example.com --version 0.4.3
 ```
 
 非默认安装必须带回全部原配置；Gateway 没有 CLI 参数，需使用环境变量：
@@ -68,10 +68,10 @@ PORTLOOM_GATEWAY_PORT=<原Gateway端口> \
   --ssh-port <原SSH端口> \
   --http-port <原HTTP-edge端口> \
   --https-port <原HTTPS-edge端口> \
-  --version 0.4.1
+  --version 0.4.3
 ```
 
-安装器会解析并持久化不可变镜像 ID、生成候选配置、创建 `native-upgrade-backup-0.4.1/` 配置备份、用 Compose `up -d` 更新，并实际访问 HTTPS `/healthz`；失败时恢复旧配置和旧镜像 ID。同名备份目录已存在会拒绝继续。
+安装器会解析并持久化不可变镜像 ID、生成候选配置、创建 `native-upgrade-backup-0.4.3/` 配置备份、用 Compose `up -d` 更新，并实际访问 HTTPS `/healthz`；失败时恢复旧配置和旧镜像 ID。同名备份目录已存在会拒绝继续。
 
 从不含 stream-edge 值的 v0.3 安装首次迁移时，可追加 `--disable-tcp-edge` 写入 `off`。已有 `.env` 的非空值会被安装器保留，后续重跑参数不是通用开关；如需变更，应先备份并审查安装目录中的 `.env`/Compose。启用 stream edge 时只放行实际路由端口，不要开放整个范围。
 
@@ -84,14 +84,14 @@ docker compose --env-file .env -f compose.yml logs --tail=200 server
 curl -I https://example.com/healthz
 ```
 
-确认旧 Web 路由在数据库迁移后显示为 HTTPS、`/api/v1/system` 为 0.4.1、Dashboard 指标出现，并验证真正的明文 HTTP、HTTPS、TCP、UDP、路径与额外端口。
+确认旧 Web 路由在数据库迁移后显示为 HTTPS、`/api/v1/system` 为 0.4.3、Dashboard 指标出现，并验证真正的明文 HTTP、HTTPS、TCP、UDP、路径与额外端口。
 
 ## 从 v0.2.x Caddy 安装迁移
 
 ```bash
 ./install-server.sh \
   --domain example.com \
-  --version 0.4.1 \
+  --version 0.4.3 \
   --migrate-native-edge
 ```
 
@@ -101,7 +101,7 @@ curl -I https://example.com/healthz
 
 任何回滚先保留一份故障现场副本，再停止当前 Compose。不要清空 `server-data`、`ssh-hostkeys`、`ssh-auth` 或 Agent 数据。
 
-- **v0.4 → v0.3.x：**恢复 `native-upgrade-backup-0.4.1/` 中 `.env`、`compose.yml`，同时恢复升级前一致的 `server-data/`。把记录的不可变 ID 同时传给 v0.3 使用的 `PORTLOOM_*_IMAGE` 与 v0.4 使用的 `PORTLOOM_*_IMAGE_ID`，防止本地移动 Tag 被误用：
+- **v0.4 → v0.3.x：**恢复 `native-upgrade-backup-0.4.3/` 中 `.env`、`compose.yml`，同时恢复升级前一致的 `server-data/`。把记录的不可变 ID 同时传给 v0.3 使用的 `PORTLOOM_*_IMAGE` 与 v0.4 使用的 `PORTLOOM_*_IMAGE_ID`，防止本地移动 Tag 被误用：
 
   ```bash
   OLD_SERVER_IMAGE_ID=sha256:replace-with-recorded-server-id

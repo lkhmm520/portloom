@@ -18,3 +18,5 @@ Plain HTTP routes are an explicit unencrypted publication mode and must not carr
 The docs image uses Node/Vite only in the build stage. The final runtime contains static files and unprivileged Nginx, not the Node dependency tree.
 
 Managed sshd assigns each Agent a deterministic, exclusive loopback bind address. On an authenticated replacement connection, its forced session command removes listeners only on that address before accepting new forwards. This closes the stale-session recovery gap without broad process or port-range cleanup; sessions belonging to other Agents remain outside the takeover scope. Custom sshd deployments do not receive this managed-session behavior automatically.
+
+The unprivileged forced command cannot write root-owned acknowledgements. It submits a bounded request through the managed FIFO, while the root guard creates a short-lived, read-only acknowledgement in a separate root-owned directory. Keeping responses out of the sticky session-lock directory is required for Linux `fs.protected_regular` compatibility.

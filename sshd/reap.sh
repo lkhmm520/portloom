@@ -6,8 +6,9 @@ case "$agent_id" in *[!A-Za-z0-9_-]*|'') exit 64;; esac
 case "$bind_address" in 127.*.*.*) ;; *) exit 64;; esac
 case "$keep_pid" in *[!0-9]*|'') exit 64;; esac
 case "$ack" in *[!A-Za-z0-9_.-]*|'') exit 64;; esac
-ack_path=/run/portloom-agent-sessions/$ack
-[ -f "$ack_path" ] && [ "$(stat -c %u "$ack_path")" = 65532 ] || exit 64
+printf '%s\n' "$ack" | grep -Eq "^${agent_id}\.[0-9]+\.[0-9a-f]{16}\.ack$" || exit 64
+ack_path=/run/portloom-reaper-acks/$ack
+[ ! -e "$ack_path" ] || exit 64
 
 hex_address=$(printf '%s\n' "$bind_address" | awk -F. '{ printf "%02X%02X%02X%02X", $4, $3, $2, $1 }')
 inodes=$(awk -v address="$hex_address" 'NR > 1 && $2 ~ ("^" address ":") && $4 == "0A" { print $10 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)
@@ -26,3 +27,5 @@ for inode in $inodes; do
   done
 done
 printf 'done\n' > "$ack_path"
+chmod 0644 "$ack_path"
+(sleep 5; rm -f "$ack_path") &

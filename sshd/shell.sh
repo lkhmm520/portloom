@@ -11,7 +11,12 @@ esac
 
 # Refuse client-supplied lookalike commands from legacy key lines. The command
 # must be forced by the authorized_keys line that authenticated this session.
-auth_fingerprint=$(awk '$1 == "publickey" { print $3; exit }' "${SSH_USER_AUTH:-/dev/null}")
+auth_key=$(awk '$1 == "publickey" { print $2, $3; exit }' "${SSH_USER_AUTH:-/dev/null}")
+case "$auth_key" in
+  *" SHA256:"*) auth_fingerprint=${auth_key#* } ;;
+  ""|" ") auth_fingerprint= ;;
+  *) auth_fingerprint=$(printf '%s\n' "$auth_key" | ssh-keygen -lf /dev/stdin 2>/dev/null | awk '{ print $2 }') ;;
+esac
 [ -n "$auth_fingerprint" ] || exit 1
 matched=false
 while IFS= read -r line; do

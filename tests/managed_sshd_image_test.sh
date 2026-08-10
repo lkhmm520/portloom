@@ -78,11 +78,12 @@ curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null
 takeover_line="command=\"/usr/local/bin/portloom-ssh-session test $own_bind\",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitlisten=\"$own_bind:*\" $pub portloom-agent:test"
 docker run --rm -e AUTH_LINE="$takeover_line" -v "$auth_volume:/auth" debian:bookworm-slim sh -c \
   'umask 077; printf "%s\n" "$AUTH_LINE" > /auth/authorized_keys.next; chown 65532:65532 /auth/authorized_keys.next; chmod 600 /auth/authorized_keys.next; mv /auth/authorized_keys.next /auth/authorized_keys'
-ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+control_path="$tmp/client/replacement.sock"
+ssh -M -S "$control_path" -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" -o ExitOnForwardFailure=yes \
-  -R "$own_bind:$remote_port:127.0.0.1:$local_port" tunnel@127.0.0.1 portloom-session >"$tmp/client/replacement.log" 2>&1 & replacement_pid=$!
+  tunnel@127.0.0.1 portloom-session >"$tmp/client/replacement.log" 2>&1 & replacement_pid=$!
 for _ in $(seq 1 100); do
-  if ! kill -0 "$ssh_pid" >/dev/null 2>&1 && curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null 2>&1; then break; fi
+  if ! kill -0 "$ssh_pid" >/dev/null 2>&1 && [ -S "$control_path" ]; then break; fi
   if ! kill -0 "$replacement_pid" >/dev/null 2>&1; then
     wait "$replacement_pid" || status=$?; cat "$tmp/client/replacement.log" >&2; docker logs "$container" >&2
     exit "${status:-1}"
@@ -90,6 +91,8 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 if kill -0 "$ssh_pid" >/dev/null 2>&1; then echo 'replacement did not reap stale same-Agent session' >&2; exit 1; fi
+ssh -S "$control_path" -O forward -R "$own_bind:$remote_port:127.0.0.1:$local_port" \
+  -p "$ssh_port" tunnel@127.0.0.1
 curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null
 if timeout 8 ssh -N -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" -o ExitOnForwardFailure=yes \

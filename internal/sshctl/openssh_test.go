@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -53,7 +54,7 @@ func withoutControlPathLockForTest() Option {
 }
 func newTestRunner(t *testing.T, executor Executor) *OpenSSHRunner {
 	t.Helper()
-	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest())
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest(), WithManagedSessionTakeover())
 	if err != nil {
 		t.Fatalf("NewOpenSSHRunner: %v", err)
 	}
@@ -73,9 +74,24 @@ func TestEnsureMasterUsesFixedExecutableAndArgumentArray(t *testing.T) {
 	if call.path != SSHExecutable {
 		t.Fatalf("path=%q", call.path)
 	}
-	want := []string{"-F", "/dev/null", "-M", "-N", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath=" + runner.config.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/etc/portloom/known_hosts", "-o", "ConnectTimeout=7", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", "/run/secrets/agent_key", "-p", "2222", "tunnel-agent@gateway.example.com"}
+	want := []string{"-F", "/dev/null", "-M", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath=" + runner.config.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/etc/portloom/known_hosts", "-o", "ConnectTimeout=7", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", "/run/secrets/agent_key", "-p", "2222", "tunnel-agent@gateway.example.com", "portloom-session"}
 	if !reflect.DeepEqual(call.args, want) {
 		t.Fatalf("args:\n got %#v\nwant %#v", call.args, want)
+	}
+}
+
+func TestEnsureMasterWithoutManagedTakeoverKeepsNoCommandMode(t *testing.T) {
+	executor := &recordingExecutor{errs: []error{errControlMasterAbsent}}
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(executor), withoutControlPathLockForTest())
+	if err != nil {
+		t.Fatalf("NewOpenSSHRunner: %v", err)
+	}
+	if err := runner.EnsureMaster(context.Background()); err != nil {
+		t.Fatalf("EnsureMaster: %v", err)
+	}
+	args := executor.calls[1].args
+	if !slices.Contains(args, "-N") || args[len(args)-1] != "tunnel-agent@gateway.example.com" {
+		t.Fatalf("unmanaged master args=%#v", args)
 	}
 }
 func TestEnsureMasterReplacesUnmanagedExistingMaster(t *testing.T) {

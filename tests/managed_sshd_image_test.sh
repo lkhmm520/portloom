@@ -5,9 +5,10 @@ tmp=$(mktemp -d)
 container=portloom-managed-sshd-test-$$
 auth_volume=portloom-managed-sshd-auth-$$
 hostkey_volume=portloom-managed-sshd-hostkeys-$$
-ssh_pid=""; http_pid=""
+ssh_pid=""; replacement_pid=""; http_pid=""
 cleanup() {
   [ -z "$ssh_pid" ] || kill "$ssh_pid" >/dev/null 2>&1 || true
+  [ -z "$replacement_pid" ] || kill "$replacement_pid" >/dev/null 2>&1 || true
   [ -z "$http_pid" ] || kill "$http_pid" >/dev/null 2>&1 || true
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm -f "$auth_volume" "$hostkey_volume" >/dev/null 2>&1 || true
@@ -70,6 +71,25 @@ for _ in $(seq 1 100); do
   fi
   sleep 0.1
 done
+curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null
+# Reproduce a v0.4.3 half-open server-side session: it authenticated from a
+# legacy key line and still owns the Agent's reverse port. Publishing the new
+# forced command simulates the Server upgrade before the replacement connects.
+takeover_line="command=\"/usr/local/bin/portloom-ssh-session test $own_bind\",no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitlisten=\"$own_bind:*\" $pub portloom-agent:test"
+docker run --rm -e AUTH_LINE="$takeover_line" -v "$auth_volume:/auth" debian:bookworm-slim sh -c \
+  'umask 077; printf "%s\n" "$AUTH_LINE" > /auth/authorized_keys.next; chown 65532:65532 /auth/authorized_keys.next; chmod 600 /auth/authorized_keys.next; mv /auth/authorized_keys.next /auth/authorized_keys'
+ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$tmp/client/known_hosts" -o ExitOnForwardFailure=yes \
+  -R "$own_bind:$remote_port:127.0.0.1:$local_port" tunnel@127.0.0.1 portloom-session >"$tmp/client/replacement.log" 2>&1 & replacement_pid=$!
+for _ in $(seq 1 100); do
+  if ! kill -0 "$ssh_pid" >/dev/null 2>&1 && curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null 2>&1; then break; fi
+  if ! kill -0 "$replacement_pid" >/dev/null 2>&1; then
+    wait "$replacement_pid" || status=$?; cat "$tmp/client/replacement.log" >&2; docker logs "$container" >&2
+    exit "${status:-1}"
+  fi
+  sleep 0.1
+done
+if kill -0 "$ssh_pid" >/dev/null 2>&1; then echo 'replacement did not reap stale same-Agent session' >&2; exit 1; fi
 curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null
 if timeout 8 ssh -N -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" -o ExitOnForwardFailure=yes \

@@ -38,7 +38,11 @@ func run(ctx context.Context, getenv agent.EnvLookup) error {
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
-	runner, err := sshctl.NewOpenSSHRunner(cfg.SSH)
+	sshOptions := []sshctl.Option{}
+	if cfg.ManagedSSHIsolated {
+		sshOptions = append(sshOptions, sshctl.WithManagedSessionTakeover())
+	}
+	runner, err := sshctl.NewOpenSSHRunner(cfg.SSH, sshOptions...)
 	if err != nil {
 		return fmt.Errorf("create SSH runner: %w", err)
 	}

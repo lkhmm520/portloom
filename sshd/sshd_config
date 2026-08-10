@@ -18,7 +18,7 @@ X11Forwarding no
 AllowAgentForwarding no
 PermitUserRC no
 PermitTunnel no
-ForceCommand /usr/sbin/nologin
+ExposeAuthInfo yes
 ClientAliveInterval 30
 ClientAliveCountMax 3
 LoginGraceTime 30

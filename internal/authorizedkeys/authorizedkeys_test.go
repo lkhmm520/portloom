@@ -73,8 +73,8 @@ func TestWriteUsesRestrictedSortedEntriesAndMode0600(t *testing.T) {
 				t.Fatalf("line %q missing %q", line, required)
 			}
 		}
-		if strings.Contains(line, "command=") {
-			t.Fatalf("line unexpectedly forces a command: %q", line)
+		if !strings.Contains(line, `command="/usr/sbin/nologin"`) {
+			t.Fatalf("legacy line does not force nologin: %q", line)
 		}
 	}
 	info, err := os.Stat(path)
@@ -131,6 +131,10 @@ func TestWriteIsolatedRestrictsEachKeyToItsAgentAddress(t *testing.T) {
 		}
 		if strings.Contains(lines[index], `permitlisten="127.0.0.1:*"`) {
 			t.Fatalf("isolated line retained shared bind address: %q", lines[index])
+		}
+		wantCommand := `command="/usr/local/bin/portloom-ssh-session ` + entry.AgentID + ` ` + address + `"`
+		if !strings.Contains(lines[index], wantCommand) {
+			t.Fatalf("isolated line %q does not force %q", lines[index], wantCommand)
 		}
 	}
 }

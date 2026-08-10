@@ -16,3 +16,5 @@ Bearer tokens are credentials, not encryption. The control plane requires HTTPS 
 Plain HTTP routes are an explicit unencrypted publication mode and must not carry the administration API or other credentials. UDP-over-SSH adds no application authentication; the real service still needs authentication, access control, and rate limiting.
 
 The docs image uses Node/Vite only in the build stage. The final runtime contains static files and unprivileged Nginx, not the Node dependency tree.
+
+Managed sshd assigns each Agent a deterministic, exclusive loopback bind address. On an authenticated replacement connection, its forced session command removes listeners only on that address before accepting new forwards. This closes the stale-session recovery gap without broad process or port-range cleanup; sessions belonging to other Agents remain outside the takeover scope. Custom sshd deployments do not receive this managed-session behavior automatically.

@@ -1,15 +1,18 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-server tini \
+    && apt-get install -y --no-install-recommends openssh-server tini util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 tunnel \
-    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --password x tunnel \
+    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/local/bin/portloom-shell --password x tunnel \
     && install -d -m 0755 /run/sshd /hostkeys /auth
 
 COPY sshd/sshd_config /etc/ssh/sshd_config.portloom
 COPY sshd/entrypoint.sh /usr/local/bin/portloom-sshd-entrypoint
-RUN chmod 0755 /usr/local/bin/portloom-sshd-entrypoint
+COPY sshd/session.sh /usr/local/bin/portloom-ssh-session
+COPY sshd/reap.sh /usr/local/bin/portloom-ssh-reap
+COPY sshd/shell.sh /usr/local/bin/portloom-shell
+RUN chmod 0755 /usr/local/bin/portloom-sshd-entrypoint /usr/local/bin/portloom-ssh-session /usr/local/bin/portloom-ssh-reap /usr/local/bin/portloom-shell
 
 EXPOSE 2222
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/portloom-sshd-entrypoint"]

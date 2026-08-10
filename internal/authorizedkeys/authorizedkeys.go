@@ -97,7 +97,11 @@ func Write(path string, entries []Entry, options ...WriteOption) error {
 			}
 			bindOwners[bindAddress] = entry.AgentID
 		}
-		restrictions := fmt.Sprintf(`%s,permitlisten="%s:*"`, baseRestrictions, bindAddress)
+		command := `/usr/sbin/nologin`
+		if config.isolatedBindings {
+			command = fmt.Sprintf(`/usr/local/bin/portloom-ssh-session %s %s`, entry.AgentID, bindAddress)
+		}
+		restrictions := fmt.Sprintf(`command="%s",%s,permitlisten="%s:*"`, command, baseRestrictions, bindAddress)
 		fmt.Fprintf(&lines, "%s %s portloom-agent:%s\n", restrictions, key, entry.AgentID)
 	}
 	dir := filepath.Dir(path)

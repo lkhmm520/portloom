@@ -94,6 +94,13 @@ func WithOperationTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithManagedSessionTakeover requests the forced session command provided by
+// PortLoom's isolated managed sshd. Unmanaged/custom sshd keeps the historical
+// no-command (-N) master behavior.
+func WithManagedSessionTakeover() Option {
+	return func(r *OpenSSHRunner) { r.managedSessionTakeover = true }
+}
+
 type OpenSSHRunner struct {
 	config                    Config
 	executor                  Executor
@@ -107,6 +114,7 @@ type OpenSSHRunner struct {
 	controlLock               *os.File
 	useExecutorForMaster      bool
 	disableControlLockForTest bool
+	managedSessionTakeover    bool
 }
 
 func NewOpenSSHRunner(config Config, options ...Option) (*OpenSSHRunner, error) {
@@ -408,7 +416,14 @@ func (r *OpenSSHRunner) EnsureMaster(ctx context.Context) (resultErr error) {
 	}
 
 	cfg := r.config
-	common := isolatedSSHArgs("-M", "-N", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath="+cfg.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+cfg.KnownHostsFile, "-o", "ConnectTimeout="+strconv.Itoa(cfg.ConnectTimeout), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", cfg.IdentityFile, "-p", strconv.Itoa(cfg.Port), destination(cfg))
+	common := isolatedSSHArgs("-M")
+	if !r.managedSessionTakeover {
+		common = append(common, "-N")
+	}
+	common = append(common, "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ControlPath="+cfg.ControlPath, "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+cfg.KnownHostsFile, "-o", "ConnectTimeout="+strconv.Itoa(cfg.ConnectTimeout), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-i", cfg.IdentityFile, "-p", strconv.Itoa(cfg.Port), destination(cfg))
+	if r.managedSessionTakeover {
+		common = append(common, "portloom-session")
+	}
 	if r.useExecutorForMaster {
 		if err := r.executor.Run(startupCtx, SSHExecutable, common); err != nil {
 			return fmt.Errorf("start SSH ControlMaster: %w", err)

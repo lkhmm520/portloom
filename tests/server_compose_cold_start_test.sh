@@ -58,7 +58,7 @@ cfg = json.loads(subprocess.check_output(["docker", "inspect", os.environ["CONTA
 assert cfg["ReadonlyRootfs"] is True, cfg
 assert cfg["CapDrop"] == ["ALL"], cfg["CapDrop"]
 caps = {cap.removeprefix("CAP_") for cap in cfg["CapAdd"]}
-assert caps == {"SETUID", "SETGID", "SYS_CHROOT"}, cfg["CapAdd"]
+assert caps == {"SETUID", "SETGID", "SYS_CHROOT", "KILL", "SYS_PTRACE"}, cfg["CapAdd"]
 assert "no-new-privileges:true" in cfg["SecurityOpt"], cfg["SecurityOpt"]
 PY
 for _ in $(seq 1 100); do

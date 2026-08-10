@@ -104,7 +104,7 @@ class ReleaseWorkflowContracts(unittest.TestCase):
         verifier = ROOT / "scripts" / "verify-release-compose.py"
         compose = ROOT / "examples" / "compose.yml"
 
-        def verify(path, version="0.4.3", extra_env=None):
+        def verify(path, version="0.4.4", extra_env=None):
             environment = os.environ.copy()
             environment.update(extra_env or {})
             return subprocess.run(
@@ -116,31 +116,31 @@ class ReleaseWorkflowContracts(unittest.TestCase):
             )
 
         self.assertEqual(0, verify(compose).returncode)
-        self.assertNotEqual(0, verify(compose, "0.4.4").returncode)
+        self.assertNotEqual(0, verify(compose, "0.4.3").returncode)
 
         source = compose.read_text()
         bait = """x-release-contract-bait:
   expected:
-    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.3
-    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.3
-    - image: ghcr.io/lkhmm520/portloom-server:0.4.3
+    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.4
+    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.4
+    - image: ghcr.io/lkhmm520/portloom-server:0.4.4
 
 """
         deceptive = bait + source.replace(
-            "ghcr.io/lkhmm520/portloom-sshd:0.4.3",
+            "ghcr.io/lkhmm520/portloom-sshd:0.4.4",
             "${PORTLOOM_CONTRACT_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:0.4.2}",
         ).replace(
-            "ghcr.io/lkhmm520/portloom-server:0.4.3",
+            "ghcr.io/lkhmm520/portloom-server:0.4.4",
             "${PORTLOOM_CONTRACT_SERVER_IMAGE:-ghcr.io/lkhmm520/portloom-server:0.4.2}",
         )
         workflow_env_bypass = source.replace(
-            "ghcr.io/lkhmm520/portloom-server:0.4.3",
+            "ghcr.io/lkhmm520/portloom-server:0.4.4",
             "ghcr.io/lkhmm520/portloom-server:${VERSION:-0.4.2}",
             1,
         )
         mutations = {
             "latest": (
-                source.replace("portloom-server:0.4.3", "portloom-server:latest", 1),
+                source.replace("portloom-server:0.4.4", "portloom-server:latest", 1),
                 {},
             ),
             "extension-bait-with-rendered-old-images": (deceptive, {}),
@@ -150,13 +150,13 @@ class ReleaseWorkflowContracts(unittest.TestCase):
             ),
             "local-build": (
                 source.replace(
-                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.3",
-                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.3\n    build: .",
+                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.4",
+                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.4\n    build: .",
                     1,
                 ),
                 {},
             ),
-            "workflow-version-environment": (workflow_env_bypass, {"VERSION": "0.4.3"}),
+            "workflow-version-environment": (workflow_env_bypass, {"VERSION": "0.4.4"}),
         }
         with tempfile.TemporaryDirectory() as directory:
             for name, (text, environment) in mutations.items():

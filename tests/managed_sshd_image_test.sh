@@ -94,12 +94,24 @@ if kill -0 "$ssh_pid" >/dev/null 2>&1; then echo 'replacement did not reap stale
 ssh -S "$control_path" -O forward -R "$own_bind:$remote_port:127.0.0.1:$local_port" \
   -p "$ssh_port" tunnel@127.0.0.1
 curl --noproxy '*' -fsS "http://$own_bind:$remote_port/" >/dev/null
+timeout 10 docker exec "$container" sh -eu -c '
+  test "$(stat -c %u:%g:%a /run/portloom-reaper-acks)" = "0:0:755"
+  if setpriv --reuid=65532 --regid=65532 --clear-groups touch /run/portloom-reaper-acks/forbidden 2>/dev/null; then
+    echo "tunnel user wrote root-owned reaper acknowledgement directory" >&2
+    exit 1
+  fi
+  find /run/portloom-reaper-acks -type f -user 0 -perm -004 | grep -q .
+  ! find /run/portloom-reaper-acks -type f -user 65532 | grep -q .
+'
+if docker logs "$container" 2>&1 | grep -q 'portloom-ssh-reap: .*Permission denied'; then
+  echo 'root reaper hit an acknowledgement permission error' >&2; exit 1
+fi
 if timeout 8 ssh -N -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" -o ExitOnForwardFailure=yes \
   -R "$other_bind:$forbidden_port:127.0.0.1:$local_port" tunnel@127.0.0.1 >/dev/null 2>&1; then
   echo 'agent key bound another agent loopback address' >&2; exit 1
 fi
-if ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+if timeout 5 ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" tunnel@127.0.0.1 true >/dev/null 2>&1; then
   echo 'interactive command unexpectedly succeeded' >&2; exit 1
 fi

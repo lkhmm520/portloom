@@ -6,6 +6,7 @@ case "$port" in *[!0-9]*|'') echo 'PORTLOOM_SSH_PORT must be an integer' >&2; ex
 if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then echo 'PORTLOOM_SSH_PORT is outside 1..65535' >&2; exit 1; fi
 install -d -m 0755 /run/sshd /hostkeys
 install -d -m 1777 /run/portloom-agent-sessions
+install -d -m 0755 /run/portloom-reaper-acks
 mkfifo -m 0622 /run/portloom-reaper.fifo
 (while :; do
   if IFS=' ' read -r agent_id bind_address keep_pid ack < /run/portloom-reaper.fifo; then

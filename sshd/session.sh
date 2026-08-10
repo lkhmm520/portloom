@@ -16,10 +16,9 @@ lock_file=$lock_dir/$agent_id.lock
 exec 9>"$lock_file"
 flock 9
 
-ack=$agent_id.$$.ack
-ack_path=$lock_dir/$ack
-: > "$ack_path"
-chmod 0666 "$ack_path"
+nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+ack=$agent_id.$$.${nonce}.ack
+ack_path=/run/portloom-reaper-acks/$ack
 printf '%s %s %s %s\n' "$agent_id" "$bind_address" "$PPID" "$ack" > /run/portloom-reaper.fifo
 attempt=0
 while [ "$attempt" -lt 20 ]; do
@@ -28,7 +27,6 @@ while [ "$attempt" -lt 20 ]; do
   sleep 0.05
 done
 result=$(cat "$ack_path" 2>/dev/null || true)
-rm -f "$ack_path"
 flock -u 9
 [ "$result" = done ] || exit 1
 

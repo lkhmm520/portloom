@@ -29,6 +29,9 @@ docker run --rm --user 0:0 -v "$agent_vol:/data" --entrypoint /bin/sh "$agent_im
 docker run --rm --user 65532:65532 -v "$agent_vol:/data" --entrypoint /usr/bin/ssh-keygen "$agent_image" \
   -q -t ed25519 -a 64 -N '' -C portloom-flow-agent -f /data/ssh/id_ed25519
 docker run -d --name "$sshd" --network host -e PORTLOOM_SSH_PORT="$ssh_port" \
+  --read-only --tmpfs /run:size=8m,mode=0755 --tmpfs /tmp:size=8m,mode=1777 \
+  --security-opt no-new-privileges:true --cap-drop ALL \
+  --cap-add SETUID --cap-add SETGID --cap-add SYS_CHROOT --cap-add KILL --cap-add SYS_PTRACE \
   -v "$hostkey_vol:/hostkeys" -v "$auth_vol:/auth:ro" "$sshd_image" >/dev/null
 for _ in $(seq 1 100); do docker logs "$sshd" 2>&1 | grep -q 'Server listening' && break; sleep 0.1; done
 docker run --rm --user 65532:65532 -e SSH_PORT="$ssh_port" -v "$hostkey_vol:/hostkeys:ro" -v "$agent_vol:/data" \

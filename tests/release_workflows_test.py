@@ -116,7 +116,7 @@ class ReleaseWorkflowContracts(unittest.TestCase):
             )
 
         self.assertEqual(0, verify(compose).returncode)
-        self.assertNotEqual(0, verify(compose, "0.4.4").returncode)
+        self.assertNotEqual(0, verify(compose, "0.4.3").returncode)
 
         source = compose.read_text()
         bait = """x-release-contract-bait:

@@ -111,7 +111,7 @@ if timeout 8 ssh -N -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes 
   -R "$other_bind:$forbidden_port:127.0.0.1:$local_port" tunnel@127.0.0.1 >/dev/null 2>&1; then
   echo 'agent key bound another agent loopback address' >&2; exit 1
 fi
-if ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+if timeout 5 ssh -p "$ssh_port" -i "$tmp/client/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$tmp/client/known_hosts" tunnel@127.0.0.1 true >/dev/null 2>&1; then
   echo 'interactive command unexpectedly succeeded' >&2; exit 1
 fi

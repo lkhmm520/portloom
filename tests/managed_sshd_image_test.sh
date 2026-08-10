@@ -19,7 +19,7 @@ start_sshd() {
   docker run -d --name "$container" --network host \
     --read-only --tmpfs /run:size=8m,mode=0755 --tmpfs /tmp:size=8m,mode=1777 \
     --security-opt no-new-privileges:true --cap-drop ALL \
-    --cap-add SETUID --cap-add SETGID --cap-add SYS_CHROOT \
+    --cap-add SETUID --cap-add SETGID --cap-add SYS_CHROOT --cap-add KILL --cap-add SYS_PTRACE \
     -e PORTLOOM_SSH_PORT="$ssh_port" -v "$hostkey_volume:/hostkeys" -v "$auth_volume:/auth:ro" \
     portloom-sshd:test >/dev/null
 }
@@ -52,7 +52,7 @@ cfg = json.loads(subprocess.check_output(["docker", "inspect", os.environ["CONTA
 assert cfg["ReadonlyRootfs"] is True, cfg
 assert cfg["CapDrop"] == ["ALL"], cfg["CapDrop"]
 caps = {cap.removeprefix("CAP_") for cap in cfg["CapAdd"]}
-assert caps == {"SETUID", "SETGID", "SYS_CHROOT"}, cfg["CapAdd"]
+assert caps == {"SETUID", "SETGID", "SYS_CHROOT", "KILL", "SYS_PTRACE"}, cfg["CapAdd"]
 assert "no-new-privileges:true" in cfg["SecurityOpt"], cfg["SecurityOpt"]
 PY
 docker run --rm -v "$hostkey_volume:/hostkeys:ro" debian:bookworm-slim \

@@ -7,7 +7,7 @@
 - SSH 使用专用非管理员账户与独立密钥；
 - `GatewayPorts no`、`AllowTcpForwarding remote`、禁用 TTY/Agent/X11；
 - 私钥 0600、`known_hosts` 指纹人工核对；
-- 长期运行的 Server 以 UID 65532 非 root 运行；受管 sshd 的 PID 1 与监听进程以 UID 0 运行，以便按连接降权。两者均使用只读根且不挂载 Docker socket；默认安装先 `cap_drop: ALL`，再仅为 Server 回加 `NET_BIND_SERVICE`，为 sshd 回加 `SETUID`、`SETGID`、`SYS_CHROOT`。安装器只在初始化数据目录权限时短暂运行额外的 UID 0 helper，该 helper 不是常驻服务；
+- 长期运行的 Server 以 UID 65532 非 root 运行；受管 sshd 的 PID 1 与监听进程以 UID 0 运行，以便按连接降权。两者均使用只读根且不挂载 Docker socket；默认安装先 `cap_drop: ALL`，再仅为 Server 回加 `NET_BIND_SERVICE`；sshd 使用 `SETUID`、`SETGID`、`SYS_CHROOT` 完成权限分离，并使用 `KILL`、`SYS_PTRACE` 让 root 守卫在容器私有 PID namespace 内识别和终止旧监听。安装器只在初始化数据目录权限时短暂运行额外的 UID 0 helper，该 helper 不是常驻服务；
 - 注册令牌短期、单次使用，注册后立即从环境删除；
 - 未执行的 Agent 安装命令及时在令牌列表删除/撤销；
 - TCP/UDP 与自定义 Web 端口只在云防火墙放行实际使用的端口；首次安装且不需要 stream edge 时使用 `--disable-tcp-edge`。已有 `.env` 的非空 bind 值会被安装器保留，不能把重跑参数当成通用开关；变更后用 `/api/v1/system` 和真实监听端口共同验证；

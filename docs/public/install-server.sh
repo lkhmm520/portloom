@@ -283,7 +283,7 @@ services:
       - /tmp:size=8m,mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, SYS_CHROOT]
+    cap_add: [SETUID, SETGID, SYS_CHROOT, KILL, SYS_PTRACE]
   server:
     image: ${PORTLOOM_SERVER_IMAGE_ID}
     container_name: portloom-server

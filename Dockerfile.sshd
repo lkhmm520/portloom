@@ -10,8 +10,9 @@ RUN apt-get update \
 COPY sshd/sshd_config /etc/ssh/sshd_config.portloom
 COPY sshd/entrypoint.sh /usr/local/bin/portloom-sshd-entrypoint
 COPY sshd/session.sh /usr/local/bin/portloom-ssh-session
+COPY sshd/reap.sh /usr/local/bin/portloom-ssh-reap
 COPY sshd/shell.sh /usr/local/bin/portloom-shell
-RUN chmod 0755 /usr/local/bin/portloom-sshd-entrypoint /usr/local/bin/portloom-ssh-session /usr/local/bin/portloom-shell
+RUN chmod 0755 /usr/local/bin/portloom-sshd-entrypoint /usr/local/bin/portloom-ssh-session /usr/local/bin/portloom-ssh-reap /usr/local/bin/portloom-shell
 
 EXPOSE 2222
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/portloom-sshd-entrypoint"]

@@ -14,6 +14,54 @@ import (
 	"github.com/lkhmm520/portloom/internal/domain"
 )
 
+func TestSQLiteBusyCommitDoesNotLeaveWriterLocked(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "busy-commit.db")
+	open := func() *sql.DB {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() { _ = db.Close() })
+		if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 50`); err != nil {
+			t.Fatal(err)
+		}
+		return db
+	}
+	db1 := open()
+	db2 := open()
+	if _, err := db1.ExecContext(ctx, `CREATE TABLE items (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := db1.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := db2.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := reader.QueryRowContext(ctx, `SELECT count(*) FROM items`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.ExecContext(ctx, `INSERT INTO items(id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(); err == nil {
+		t.Fatal("commit unexpectedly succeeded while a reader held the rollback journal")
+	}
+	if err := reader.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db2.ExecContext(ctx, `INSERT INTO items(id) VALUES (2)`); err != nil {
+		t.Fatalf("failed commit left the writer connection locked: %v", err)
+	}
+}
+
 func TestEnrollmentTokenIsOneTimeAndCreatesAuthenticatableAgent(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "state.db"), Options{PortRangeStart: 31000, PortRangeEnd: 31002})

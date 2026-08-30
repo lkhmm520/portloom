@@ -855,6 +855,37 @@ func TestRunnerCloseKillsManagedMasterWhenControlSocketIsUnresponsive(t *testing
 	}
 }
 
+func TestCloseAllowsDelayedManagedExitConfirmationUnderIOPressure(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "delayed-master-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	process := &managedProcess{
+		cmd:    &exec.Cmd{},
+		output: output,
+		done:   done,
+		killFn: func() error {
+			go func() {
+				time.Sleep(1200 * time.Millisecond)
+				close(done)
+			}()
+			return nil
+		},
+	}
+	runner, err := NewOpenSSHRunner(validSSHConfig(t), WithExecutor(&recordingExecutor{err: errors.New("control socket unavailable")}), withoutControlPathLockForTest(), WithOperationTimeout(25*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.master = process
+	if err := runner.Close(context.Background()); err != nil {
+		t.Fatalf("Close rejected delayed but confirmed termination: %v", err)
+	}
+	if runner.currentMaster() != nil {
+		t.Fatal("confirmed terminated master ownership was not cleared")
+	}
+}
+
 func TestCloseDoesNotWaitForeverWhenManagedExitCannotBeConfirmed(t *testing.T) {
 	output, err := os.CreateTemp(t.TempDir(), "stuck-master-*")
 	if err != nil {

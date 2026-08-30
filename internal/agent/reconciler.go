@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/lkhmm520/portloom/internal/domain"
 	"github.com/lkhmm520/portloom/internal/sshctl"
@@ -18,6 +19,9 @@ type SSHRunner interface {
 	Cancel(context.Context, sshctl.Forward) error
 	Close(context.Context) error
 }
+
+const masterCleanupTimeout = 15 * time.Second
+
 type Reconciler struct {
 	mu               sync.Mutex
 	runner           SSHRunner
@@ -58,7 +62,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 
 	if r.masterReady {
 		if checkErr := r.runner.CheckMaster(ctx); checkErr != nil {
-			if closeErr := r.runner.Close(ctx); closeErr != nil {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), masterCleanupTimeout)
+			closeErr := r.runner.Close(cleanupCtx)
+			cancelCleanup()
+			if closeErr != nil {
 				message := fmt.Sprintf("SSH ControlMaster state is unknown: check failed: %v; close failed: %v", checkErr, closeErr)
 				return r.masterFailureObserved(desired, observed, message)
 			}

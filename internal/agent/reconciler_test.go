@@ -13,15 +13,16 @@ import (
 )
 
 type fakeRunner struct {
-	masters        int
-	checks         int
-	added, removed []sshctl.Forward
-	addErr         error
-	checkErr       error
-	cancelErr      error
-	closeErr       error
-	closeCalls     int
-	masterPresent  bool
+	masters         int
+	checks          int
+	added, removed  []sshctl.Forward
+	addErr          error
+	checkErr        error
+	cancelErr       error
+	closeErr        error
+	closeCalls      int
+	closeContextErr error
+	masterPresent   bool
 }
 
 func (r *fakeRunner) EnsureMaster(context.Context) error {
@@ -47,8 +48,9 @@ func (r *fakeRunner) Cancel(_ context.Context, f sshctl.Forward) error {
 	r.removed = append(r.removed, f)
 	return r.cancelErr
 }
-func (r *fakeRunner) Close(context.Context) error {
+func (r *fakeRunner) Close(ctx context.Context) error {
 	r.closeCalls++
+	r.closeContextErr = ctx.Err()
 	if r.closeErr == nil {
 		r.masterPresent = false
 	}
@@ -153,6 +155,25 @@ func TestReconcilerRebuildsActiveRoutesWhenControlMasterDisconnects(t *testing.T
 		t.Fatalf("observed=%#v", observed)
 	}
 }
+func TestReconcilerUsesFreshContextToCloseUnresponsiveMaster(t *testing.T) {
+	r := &fakeRunner{masterPresent: true, checkErr: context.DeadlineExceeded}
+	x := NewReconciler(r, fakeChecker{}, WithMasterReady())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	observed := x.Reconcile(ctx, DesiredState{Revision: 1, Routes: []domain.Route{testRoute()}})
+
+	if r.closeCalls != 1 {
+		t.Fatalf("close calls=%d want 1", r.closeCalls)
+	}
+	if r.closeContextErr != nil {
+		t.Fatalf("close inherited expired reconcile context: %v", r.closeContextErr)
+	}
+	if observed.Routes[0].TunnelStatus != StatusUp {
+		t.Fatalf("observed=%#v", observed)
+	}
+}
+
 func TestReconcilerDoesNotAssumeRoutesClosedWhenMasterCleanupFails(t *testing.T) {
 	r := &fakeRunner{}
 	x := NewReconciler(r, fakeChecker{})

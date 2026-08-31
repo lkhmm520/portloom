@@ -65,8 +65,8 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
     def test_beginner_template_is_repeatable_pinned_and_token_safe(self):
         compose = (ROOT / "examples" / "compose.yml").read_text()
         env_template = (ROOT / "examples" / "compose.env.example").read_text()
-        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.4.5", compose)
-        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.4.5", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.4.6", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.4.6", compose)
         self.assertNotIn(":latest", compose)
         self.assertIn("./data/server:/data", compose)
         self.assertIn("./data/ssh-auth:/auth", compose)
@@ -122,7 +122,7 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
         for relative in current_pages:
             text = (ROOT / relative).read_text()
             with self.subTest(path=relative):
-                self.assertIn("0.4.5", text)
+                self.assertIn("0.4.6", text)
                 self.assertNotIn("0.4.0", text)
                 self.assertNotIn("0.4.1", text)
                 self.assertNotIn("0.4.2", text)

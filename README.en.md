@@ -8,7 +8,7 @@
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/lkhmm520/portloom/actions/workflows/test.yml/badge.svg" /></a>
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml/badge.svg" /></a>
     <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20sshd%20%7C%20docs-0f9f72" /></a>
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.25.12+-00ADD8?logo=go&logoColor=white" />
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25.13+-00ADD8?logo=go&logoColor=white" />
   </p>
   <p><a href="https://docs.look4i.com/en/"><strong>Documentation</strong></a> · <a href="#five-minute-start">Quick start</a> · <a href="https://github.com/lkhmm520/portloom/issues">Issues</a></p>
 </div>
@@ -122,7 +122,7 @@ The WebUI keeps the administrator token in tab-scoped `sessionStorage` and sends
 
 ## Development and documentation
 
-Go 1.25.12+ and Node.js 20+ are required; Docker is used for images and end-to-end verification:
+Go 1.25.13+ and Node.js 20+ are required; Docker is used for images and end-to-end verification:
 
 ```bash
 go mod download

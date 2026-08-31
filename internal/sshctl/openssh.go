@@ -22,7 +22,7 @@ import (
 const (
 	SSHExecutable             = "/usr/bin/ssh"
 	managedGracePeriod        = 250 * time.Millisecond
-	managedKillConfirmTimeout = time.Second
+	managedKillConfirmTimeout = 5 * time.Second
 	maxManagedOutputBytes     = 64 * 1024
 )
 

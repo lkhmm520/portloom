@@ -8,7 +8,7 @@
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/lkhmm520/portloom/actions/workflows/test.yml/badge.svg" /></a>
     <a href="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/lkhmm520/portloom/actions/workflows/docs.yml/badge.svg" /></a>
     <a href="https://github.com/lkhmm520/portloom/pkgs/container/portloom-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-server%20%7C%20agent%20%7C%20sshd%20%7C%20docs-0f9f72" /></a>
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.25.12+-00ADD8?logo=go&logoColor=white" />
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25.13+-00ADD8?logo=go&logoColor=white" />
   </p>
   <p><a href="https://docs.look4i.com/"><strong>官方文档</strong></a> · <a href="#五分钟开始">快速开始</a> · <a href="https://github.com/lkhmm520/portloom/issues">问题反馈</a></p>
 </div>
@@ -122,7 +122,7 @@ WebUI 把管理员 Token 保存在当前标签页的 `sessionStorage`，并通�
 
 ## 开发与文档
 
-要求 Go 1.25.12+、Node.js 20+，Docker 用于镜像和端到端验证：
+要求 Go 1.25.13+、Node.js 20+，Docker 用于镜像和端到端验证：
 
 ```bash
 go mod download

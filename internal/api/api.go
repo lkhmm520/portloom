@@ -32,6 +32,7 @@ type Config struct {
 	ManagedSSHIsolated   bool
 	ServerVersion        string
 	PublicHost           string
+	EnableCutover        bool
 	TLSAskToken          string
 	TCPEnabled           bool
 	UDPEnabled           bool
@@ -61,6 +62,7 @@ func New(state *store.Store, config Config) http.Handler {
 	}
 	s := &server{store: state, config: config}
 	mux := http.NewServeMux()
+	s.registerCutover(mux)
 	// Canonical UI endpoints.
 	mux.HandleFunc("GET /api/v1/system", s.admin(s.systemInfo))
 	mux.HandleFunc("GET /api/v1/metrics", s.admin(s.metrics))

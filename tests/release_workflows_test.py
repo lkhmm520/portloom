@@ -1,14 +1,70 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import hashlib
 import os
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseWorkflowContracts(unittest.TestCase):
+    def test_cli_and_cutover_are_part_of_the_read_only_quality_gate(self):
+        text = (ROOT / ".github/workflows/test.yml").read_text()
+        self.assertIn('EXPECTED_REVISION="$revision" make release-portloomctl', text)
+        self.assertIn("PORTLOOM_CUTOVER_SSHD_IMAGE: portloom-sshd:test", text)
+        self.assertIn("run: make cutover-e2e", text)
+        self.assertIn("persist-credentials: false", text)
+        self.assertIn("--no-tags --depth=1 https://github.com/lkhmm520/portloom.git refs/tags/v0.4.6:refs/tags/v0.4.6", text)
+        self.assertIn("./tests/downgrade_interlock_test.sh", text)
+        self.assertNotIn("packages: write", text)
+        self.assertNotIn("contents: write", text)
+
+    def test_cli_release_assets_are_verified_before_creation(self):
+        text = (ROOT / ".github/workflows/finalize-release.yml").read_text()
+        verify_job = text.split("  verify-production:\n", 1)[1].split("  promote-stable-channels:\n", 1)[0]
+        create_job = text.split("  create-release:\n", 1)[1].split("  cleanup-marker:\n", 1)[0]
+        self.assertIn("make release-portloomctl", verify_job)
+        self.assertIn("actions/upload-artifact@", verify_job)
+        self.assertIn("actions/download-artifact@", create_job)
+        self.assertIn("artifact-ids: ${{ needs.verify-production.outputs.cli-artifact-id }}", create_job)
+        self.assertLess(create_job.index("cmp - SHA256SUMS"), create_job.index("gh release create"))
+        self.assertIn("gh release download", create_job)
+        self.assertIn('cmp --silent "$asset" "$download/$asset"', create_job)
+        self.assertNotIn("--clobber", create_job)
+
+    def test_cli_release_shell_rejects_tampering_before_running_gh(self):
+        workflow = (ROOT / ".github/workflows/finalize-release.yml").read_text()
+        job = workflow.split("  create-release:\n", 1)[1].split("  cleanup-marker:\n", 1)[0]
+        script = textwrap.dedent(job.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            gh = work / "gh"
+            gh.write_text("#!/bin/sh\ntouch gh-called\nexit 1\n")
+            gh.chmod(0o755)
+            env = dict(os.environ, PATH=f"{work}:{os.environ['PATH']}",
+                       TAG="v1.2.3", EXPECTED_REVISION="test", EXPECTED_PRERELEASE="false")
+            names = ("portloomctl-linux-amd64", "portloomctl-linux-arm64")
+            manifest = "".join(f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n" for name in names)
+            env["EXPECTED_CLI_CHECKSUMS"] = hashlib.sha256(manifest.encode()).hexdigest()
+            for mutation in ("manifest", "binary", "missing", "none"):
+                with self.subTest(mutation=mutation):
+                    for name in names:
+                        (work / name).write_text(name)
+                    (work / "SHA256SUMS").write_text(manifest)
+                    if mutation == "manifest":
+                        (work / "SHA256SUMS").write_text(manifest + "\n")
+                    if mutation == "binary":
+                        (work / names[0]).write_text("changed")
+                    if mutation == "missing":
+                        (work / names[1]).unlink()
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                            cwd=work, env=env, capture_output=True, text=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(mutation == "none", (work / "gh-called").exists(), result.stderr)
+
     def test_image_publication_is_exact_immutable_and_external_docs_independent(self):
         text = (ROOT / ".github/workflows/publish-images.yml").read_text()
         self.assertNotIn("https://docs.look4i.com/", text)
@@ -104,7 +160,7 @@ class ReleaseWorkflowContracts(unittest.TestCase):
         verifier = ROOT / "scripts" / "verify-release-compose.py"
         compose = ROOT / "examples" / "compose.yml"
 
-        def verify(path, version="0.4.6", extra_env=None):
+        def verify(path, version="0.5.0", extra_env=None):
             environment = os.environ.copy()
             environment.update(extra_env or {})
             return subprocess.run(
@@ -121,26 +177,26 @@ class ReleaseWorkflowContracts(unittest.TestCase):
         source = compose.read_text()
         bait = """x-release-contract-bait:
   expected:
-    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.6
-    - image: ghcr.io/lkhmm520/portloom-sshd:0.4.6
-    - image: ghcr.io/lkhmm520/portloom-server:0.4.6
+    - image: ghcr.io/lkhmm520/portloom-sshd:0.5.0
+    - image: ghcr.io/lkhmm520/portloom-sshd:0.5.0
+    - image: ghcr.io/lkhmm520/portloom-server:0.5.0
 
 """
         deceptive = bait + source.replace(
-            "ghcr.io/lkhmm520/portloom-sshd:0.4.6",
+            "ghcr.io/lkhmm520/portloom-sshd:0.5.0",
             "${PORTLOOM_CONTRACT_SSHD_IMAGE:-ghcr.io/lkhmm520/portloom-sshd:0.4.2}",
         ).replace(
-            "ghcr.io/lkhmm520/portloom-server:0.4.6",
+            "ghcr.io/lkhmm520/portloom-server:0.5.0",
             "${PORTLOOM_CONTRACT_SERVER_IMAGE:-ghcr.io/lkhmm520/portloom-server:0.4.2}",
         )
         workflow_env_bypass = source.replace(
-            "ghcr.io/lkhmm520/portloom-server:0.4.6",
+            "ghcr.io/lkhmm520/portloom-server:0.5.0",
             "ghcr.io/lkhmm520/portloom-server:${VERSION:-0.4.2}",
             1,
         )
         mutations = {
             "latest": (
-                source.replace("portloom-server:0.4.6", "portloom-server:latest", 1),
+                source.replace("portloom-server:0.5.0", "portloom-server:latest", 1),
                 {},
             ),
             "extension-bait-with-rendered-old-images": (deceptive, {}),
@@ -148,15 +204,19 @@ class ReleaseWorkflowContracts(unittest.TestCase):
                 source + "\n  unexpected:\n    image: ghcr.io/lkhmm520/portloom-agent:latest\n",
                 {},
             ),
+            "unexpected-profiled-service": (
+                source + "\n  unexpected:\n    profiles: [optional]\n    image: ghcr.io/lkhmm520/portloom-agent:latest\n",
+                {},
+            ),
             "local-build": (
                 source.replace(
-                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.6",
-                    "    image: ghcr.io/lkhmm520/portloom-server:0.4.6\n    build: .",
+                    "    image: ghcr.io/lkhmm520/portloom-server:0.5.0",
+                    "    image: ghcr.io/lkhmm520/portloom-server:0.5.0\n    build: .",
                     1,
                 ),
                 {},
             ),
-            "workflow-version-environment": (workflow_env_bypass, {"VERSION": "0.4.6"}),
+            "workflow-version-environment": (workflow_env_bypass, {"VERSION": "0.5.0"}),
         }
         with tempfile.TemporaryDirectory() as directory:
             for name, (text, environment) in mutations.items():

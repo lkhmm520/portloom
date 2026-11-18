@@ -15,6 +15,8 @@
 | `TM_TLS_CACHE_DIR` | `/data/certs` | autocert 缓存，必须是持久化绝对路径 |
 | `TM_ACME_EMAIL` | 空 | 可选 ACME 账户联系邮箱 |
 | `TM_PUBLIC_HOST` | 空 | 管理域名；启用原生 edge 或 TLS ask 时必填 |
+| `TM_ENABLE_CUTOVER` | `false` | 显式开放管理员发布闸门接口；需要有效的 `TM_PUBLIC_HOST`。关闭接口不会清除已保存的闸门 |
+| `TM_SERVING_NODE_ID` | 空 | Gateway 响应头 `PortLoom-Serving-Node` 的固定值；必须是单个值，不得包含首尾空白、逗号或控制字符。两端应设置不同的 ID |
 | `TM_DATABASE_PATH` | `/data/portloom.db` | SQLite 绝对路径 |
 | `TM_WEB_DIR` | `/app/web` | WebUI 静态文件目录 |
 | `TM_PORT_RANGE_START/END` | `20000` / `29999` | SSH 回环端口池；不得与公网 stream 端口重叠 |
@@ -30,6 +32,8 @@
 
 stream edge 默认开启。其端口不能占用管理/Gateway/TLS ask、主 edge、受管 SSH 或隧道端口池。extra Web 监听器只在原生 edge 启用时可用，并跟随主 HTTP edge 的 bind host。
 
+使用切换配置时，须显式将变量传给 Server 进程或写入 Compose 服务的 `environment:`。安装器没有切换参数；仅写入 Compose 用于插值的 `.env` 不会将变量传入容器。
+
 ## Server 安装器
 
 | 参数/环境 | 说明 |
@@ -37,7 +41,7 @@ stream edge 默认开启。其端口不能占用管理/Gateway/TLS ask、主 edg
 | `--domain` | 必填管理域名 |
 | `--web-port` / `--ssh-port` | 内部管理端口 / 公网受管 SSH 端口 |
 | `--http-port` / `--https-port` | 本机主 edge 端口；公网 80 仍须转发到 HTTP 端口 |
-| `--version` | 固定镜像 Tag；生产建议 `0.4.6` 等精确版本 |
+| `--version` | 固定镜像 Tag；生产建议 `0.5.0` 等精确版本 |
 | `--disable-tcp-edge` | 写入 `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | 兼容参数；v0.4 默认已启用 |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | 与 `--enable-tcp-edge` 同时使用，在首次安装前覆盖 bind IP |

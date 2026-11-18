@@ -20,6 +20,37 @@ import (
 	"github.com/lkhmm520/portloom/internal/store"
 )
 
+func TestLoadConfigCutoverOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name, value, host string
+		want, invalid     bool
+	}{
+		{name: "default off"},
+		{name: "explicit off", value: "false"},
+		{name: "explicit on", value: "true", host: "console.example.test", want: true},
+		{name: "typo rejected", value: "treu", invalid: true},
+		{name: "missing management host", value: "true", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"TM_ADMIN_TOKEN": "test-admin-token-only", "TM_ENABLE_CUTOVER": tc.value, "TM_PUBLIC_HOST": tc.host}
+			cfg, err := loadConfig(func(key string) string { return env[key] })
+			if (err != nil) != tc.invalid || (!tc.invalid && cfg.EnableCutover != tc.want) {
+				t.Fatalf("enabled=%t, err=%v", cfg.EnableCutover, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsInvalidServingNodeID(t *testing.T) {
+	env := map[string]string{
+		"TM_ADMIN_TOKEN":     "test-admin-token-only",
+		"TM_SERVING_NODE_ID": "source,target",
+	}
+	if _, err := loadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "TM_SERVING_NODE_ID") {
+		t.Fatalf("expected invalid serving node ID error, got %v", err)
+	}
+}
+
 func TestLoadConfigRequiresAdminTokenAndUsesDefaults(t *testing.T) {
 	if _, err := loadConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("expected missing token error")

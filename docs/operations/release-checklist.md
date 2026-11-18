@@ -1,6 +1,6 @@
 # 发布验收清单
 
-本页面向维护者。v0.4 发布不能只验证旧版 HTTPS 域名路由。
+本页面向维护者。同时验收已有路由能力和 v0.5 切换功能。
 
 ## 发布顺序
 
@@ -11,7 +11,7 @@
 
 ## 制品与冷安装
 
-先将 `VERSION` 设为待发布的精确 v0.4 版本（例如 `0.4.6`）；下列所有镜像、安装命令和运行时版本必须使用同一个值。
+先将 `VERSION` 设为待发布的精确 v0.5 版本（例如 `0.5.0`）；下列所有镜像、安装命令和运行时版本必须使用同一个值。
 
 - [ ] 两个线上安装脚本 HTTP 200、非空、`bash -n` 通过；
 - [ ] 四个 `$VERSION` 镜像存在、双架构 Revision 与 Tag commit 一致；
@@ -20,7 +20,7 @@
 - [ ] WebUI 生成的 Agent 命令包含同版本，空白 NAS 安装后 `.env` 不再含一次性令牌；
 - [ ] 至少在一套 Synology/QNAP 类环境验证 PATH、Docker daemon、Compose v2 fallback 和无 `flock` Agent 安装。
 
-## v0.4 功能验收
+## 已有路由能力验收
 
 - [ ] HTTPS 默认域名路由：证书、HTTP 308、Host、WebSocket/Range；
 - [ ] 真 HTTP 路由：无证书申请、无强制跳转；
@@ -32,9 +32,16 @@
 - [ ] Dashboard：60 分钟曲线、总量、Server/Agent CPU/RSS、Server 重启归零；metrics API：每路由计数；
 - [ ] Add Agent 令牌删除：未使用命令失效，已注册 Agent 不受影响。
 
+## v0.5 切换验收
+
+- [ ] `make cutover-e2e` 在隔离环境中通过两套 Server/Agent、托管 SSH、TLS 探针及真实 RFC 2136 权威 DNS 测试；验证正向切换、回滚和非活动入口拒绝流量。
+- [ ] `./tests/downgrade_interlock_test.sh` 构建精确的 v0.4.6 Server，验证即使闸门已释放，也会在监听前拒绝带闸门的数据库。
+- [ ] 在干净的 Tag 检出目录运行 `EXPECTED_REVISION="$(git rev-parse HEAD)" make release-portloomctl`，检查 Linux amd64 与 arm64 的发布 Revision，并对本机架构制品执行冒烟测试。最终 GitHub Release 包含两个二进制和匹配的 `SHA256SUMS`；重跑时校验下载文件，不覆盖制品。
+- [ ] Finalize 前确认生产新手 Compose、文档镜像和安装器均与精确 Tag 匹配；本地检查不等于线上验收。
+
 ## 升级与回滚
 
-- [ ] 用 v0.3.x 数据库升级到当前 v0.4.6，确认 legacy `http` 迁移为 `https` 且旧公网行为不变；
+- [ ] 用 v0.3.x 数据库升级到 `$VERSION`，确认 legacy `http` 迁移为 `https` 且旧公网行为不变；
 - [ ] 升级前已保存一致的 `server-data`，因为配置备份不含数据库；
 - [ ] Server 新版本失败时自动恢复旧配置/镜像 ID；
 - [ ] 用升级前数据库完成一次真实 v0.3.x 回滚；

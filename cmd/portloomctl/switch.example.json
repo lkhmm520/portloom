@@ -1,0 +1,69 @@
+{
+  "enabled": false,
+  "operation_id": "media-move-1",
+  "journal_dir": "./journal",
+  "hosts": ["media.example.test"],
+  "source": {
+    "id": "source",
+    "profile": {
+      "url": "https://source-admin.example.test",
+      "management_host": "source-admin.example.test",
+      "token_file": "source.token"
+    },
+    "client_id": "source-agent-id",
+    "generations": {"media.example.test": 1},
+    "addresses": ["192.0.2.10"]
+  },
+  "target": {
+    "id": "target",
+    "profile": {
+      "url": "https://target-admin.example.test",
+      "management_host": "target-admin.example.test",
+      "token_file": "target.token"
+    },
+    "client_id": "target-agent-id",
+    "generations": {"media.example.test": 1},
+    "addresses": ["192.0.2.11"]
+  },
+  "dns": {
+    "primary": "192.0.2.53:53",
+    "zone": "example.test",
+    "marker": "media-cutover.example.test",
+    "key_name": "media-cutover-key.example.test",
+    "secret_file": "media-dns.key",
+    "ttl": 30
+  },
+  "https": {
+    "preview_ca_file": "preview-ca.pem",
+    "routes": [
+      {
+        "node_id": "source",
+        "route": {
+          "ID": "source-route-id", "Host": "media.example.test", "PathPrefix": "",
+          "LocalHost": "127.0.0.1", "TunnelGroup": "", "LocalPort": 8085,
+          "RemotePort": 24000, "DesiredRevision": 1, "Enabled": true, "StripPath": false
+        },
+        "path": "/canary",
+        "preview_host": "media-source-preview.example.test",
+        "preview_route_id": "source-preview-route-id",
+        "preview_address": "192.0.2.10:8443",
+        "public": {"status": 200, "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+        "preview": {"status": 200, "sha256": "1111111111111111111111111111111111111111111111111111111111111111"}
+      },
+      {
+        "node_id": "target",
+        "route": {
+          "ID": "target-route-id", "Host": "media.example.test", "PathPrefix": "",
+          "LocalHost": "127.0.0.1", "TunnelGroup": "", "LocalPort": 8085,
+          "RemotePort": 24001, "DesiredRevision": 1, "Enabled": true, "StripPath": false
+        },
+        "path": "/canary",
+        "preview_host": "media-target-preview.example.test",
+        "preview_route_id": "target-preview-route-id",
+        "preview_address": "192.0.2.11:8443",
+        "public": {"status": 200, "sha256": "2222222222222222222222222222222222222222222222222222222222222222"},
+        "preview": {"status": 200, "sha256": "2222222222222222222222222222222222222222222222222222222222222222"}
+      }
+    ]
+  }
+}

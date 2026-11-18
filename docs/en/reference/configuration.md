@@ -15,6 +15,8 @@ The easy installers generate configuration. Prefer installer flags over hand-edi
 | `TM_TLS_CACHE_DIR` | `/data/certs` | persistent absolute autocert cache |
 | `TM_ACME_EMAIL` | empty | optional ACME account contact |
 | `TM_PUBLIC_HOST` | empty | management hostname; required for native edge or TLS ask |
+| `TM_ENABLE_CUTOVER` | `false` | opt in to admin publication-gate endpoints; requires a valid `TM_PUBLIC_HOST`. Disabling the API does not clear persisted gates |
+| `TM_SERVING_NODE_ID` | empty | fixed value for the Gateway `PortLoom-Serving-Node` response header; a single value with no surrounding whitespace, comma, or control characters. Configure distinct IDs on the two nodes |
 | `TM_DATABASE_PATH` | `/data/portloom.db` | SQLite absolute path |
 | `TM_WEB_DIR` | `/app/web` | WebUI static directory |
 | `TM_PORT_RANGE_START/END` | `20000` / `29999` | SSH loopback pool; public stream ports cannot overlap |
@@ -30,6 +32,8 @@ The easy installers generate configuration. Prefer installer flags over hand-edi
 
 The stream edge is enabled by default. It cannot use control/Gateway/TLS-ask, primary edge, managed SSH, or tunnel-pool ports. Extra web listeners are available only with native edge enabled and use the primary HTTP edge's bind host.
 
+To use these cutover settings, pass them explicitly into the Server process or the Compose service `environment:`. The installer has no cutover flags; putting a value only in the Compose interpolation `.env` does not pass it into the container.
+
 ## Server installer
 
 | Flag/environment | Meaning |
@@ -37,7 +41,7 @@ The stream edge is enabled by default. It cannot use control/Gateway/TLS-ask, pr
 | `--domain` | required management hostname |
 | `--web-port` / `--ssh-port` | internal administration / public managed-SSH port |
 | `--http-port` / `--https-port` | local primary edges; public 80 must still forward to HTTP |
-| `--version` | pinned image tag; use an exact version such as `0.4.6` in production |
+| `--version` | pinned image tag; use an exact version such as `0.5.0` in production |
 | `--disable-tcp-edge` | write `PORTLOOM_TCP_EDGE_BIND_HOST=off` |
 | `--enable-tcp-edge` | compatibility flag; v0.4 is enabled by default |
 | `PORTLOOM_TCP_EDGE_BIND_HOST` | use with `--enable-tcp-edge` to override the bind IP before first install |

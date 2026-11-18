@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS routes (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+SELECT 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 1);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
@@ -118,7 +120,7 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime
 	if err := s.ensureWebRouteSchema(ctx); err != nil {
 		return err
 	}
-	return nil
+	return s.ensurePublicationGateSchema(ctx)
 }
 
 // ensureWebRouteSchema upgrades the routes table for split HTTP/HTTPS

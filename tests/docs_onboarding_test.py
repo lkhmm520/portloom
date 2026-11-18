@@ -1,10 +1,171 @@
+import os
 import pathlib
+import re
+import shutil
 import stat
 import subprocess
+import tarfile
+import tempfile
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+UPGRADE_PAGES = ("docs/operations/backup-upgrade.md", "docs/en/operations/backup-upgrade.md")
+CLI_README = "cmd/portloomctl/README.md"
+
+
+def shell_fences(relative):
+    text = (ROOT / relative).read_text()
+    for match in re.finditer(r"^( *)```(sh|bash)\n(.*?)^\1```[ \t]*$", text, re.M | re.S):
+        yield text.count("\n", 0, match.start()) + 1, match[2], match[3]
+
+
+def executable(path, text):
+    path.write_text(text)
+    path.chmod(0o700)
+
+
+class ExecutableReleaseDocsTest(unittest.TestCase):
+    def test_shell_examples_parse_as_written(self):
+        for relative in (CLI_README, *UPGRADE_PAGES):
+            fences = list(shell_fences(relative))
+            self.assertTrue(fences, relative)
+            for line, shell, snippet in fences:
+                with self.subTest(path=relative, line=line):
+                    self.assertNotRegex(snippet, r"(?m)(?:^|[ =])<[^<>\s]+>")
+                    result = subprocess.run(
+                        [shell, "-n"], input=snippet, text=True, capture_output=True
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_cutover_fences_require_and_forward_the_confirmation(self):
+        snippets = [snippet for _, _, snippet in shell_fences(CLI_README) if "--confirm" in snippet]
+        self.assertEqual(3, len(snippets))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = pathlib.Path(tmp)
+            log = work / "args"
+            executable(work / "portloomctl", '#!/bin/sh\nprintf "%s\\n" "$@" > args\n')
+            for verb, snippet in zip(("switch", "settle", "rollback"), snippets):
+                with self.subTest(verb=verb):
+                    env = {"PATH": os.defpath}
+                    failed = subprocess.run(["sh", "-c", snippet], cwd=work, env=env, capture_output=True)
+                    self.assertNotEqual(0, failed.returncode)
+                    self.assertIn(b"PORTLOOM_CONFIRM", failed.stderr)
+                    self.assertFalse(log.exists())
+                    digest = "af" * 32
+                    env["PORTLOOM_CONFIRM"] = digest
+                    subprocess.run(["sh", "-c", snippet], cwd=work, env=env, check=True)
+                    self.assertEqual([
+                        verb, "--config", "/secure/switch.json", "--operation", "media-move-1",
+                        "--confirm", digest,
+                    ], log.read_text().splitlines())
+                    log.unlink()
+
+    def test_bilingual_upgrade_fences_pass_the_real_installer_guard(self):
+        for relative in UPGRADE_PAGES:
+            snippets = [snippet for _, _, snippet in shell_fences(relative) if '"$installer"' in snippet]
+            self.assertEqual(1, len(snippets), relative)
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as tmp:
+                self.exercise_upgrade(pathlib.Path(tmp), snippets[0])
+
+    def exercise_upgrade(self, work, snippet):
+        home = work / "custom install"
+        installer = work / "install-server.sh"
+        shutil.copy2(ROOT / "docs/public/install-server.sh", installer)
+        state = work / "state"
+        log = work / "events"
+        executable(work / "docker", '''#!/usr/bin/env bash
+set -eu
+case "$1" in
+  compose)
+    case " $* " in
+      ' compose version ') ;;
+      *' ps -q '*) grep -qx true "$STATE"; printf 'portloom-%s\\n' "${@: -1}" ;;
+      *' stop server sshd ') echo false > "$STATE"; echo stop >> "$EVENTS" ;;
+      *' start server sshd ') echo true > "$STATE"; echo start >> "$EVENTS" ;;
+      *' up -d '*) echo up >> "$EVENTS" ;;
+      *) exit 1 ;;
+    esac ;;
+  inspect)
+    name=${@: -1}; role=${name#portloom-}
+    case "$role" in server) digit=a ;; sshd) digit=c ;; *) exit 1 ;; esac
+    printf -v id '%064d' 0; id=sha256:${id//0/$digit}
+    case "$3" in
+      '{{.Name}} {{.Image}}') printf '/%s %s\\n' "$name" "$id" ;;
+      *) printf '%s|%s|%s|%s\\n' "$SERVER_HOME" "$role" "$id" "$(<"$STATE")" ;;
+    esac ;;
+  image)
+    [[ ${@: -1} == *-server:* ]] && digit=d || digit=e
+    printf -v id '%064d' 0; printf 'sha256:%s\\n' "${id//0/$digit}" ;;
+  pull|run|exec) ;;
+  *) exit 1 ;;
+esac
+''')
+        executable(work / "sudo", '''#!/bin/sh
+set -eu
+[ "$1" != -v ] || exit 0
+case "$1 $2" in
+  'tar -cpf')
+    grep -qx false "$STATE"
+    echo archive >> "$EVENTS"
+    [ "${FAIL_ARCHIVE:-}" != yes ] || exit 42 ;;
+  'tar -df') echo verify >> "$EVENTS" ;;
+esac
+exec "$@"
+''')
+        domain = "loom.example.test"
+        ports = {"WEB": "18080", "SSH": "12222", "GATEWAY": "18081", "HTTP": "10080", "HTTPS": "10443"}
+        env = {
+            "HOME": str(work), "PATH": f"{work}:{os.defpath}", "STATE": str(state), "EVENTS": str(log),
+            "SERVER_HOME": str(home), "SERVER_DOMAIN": domain,
+        }
+        config = {"DOMAIN": domain, **{f"{k}_PORT": v for k, v in ports.items()}}
+        env.update({f"SERVER_{k}": v for k, v in config.items()})
+        for name in ("server-data", "ssh-auth", "ssh-hostkeys"):
+            (home / name).mkdir(parents=True)
+        (home / "server-data/portloom.db").write_bytes(b"offline state fixture")
+        saved_env = "".join(f"PORTLOOM_{k}={v}\n" for k, v in config.items())
+        for role, digit in (("SERVER", "a"), ("SSHD", "c")):
+            saved_env += f"PORTLOOM_{role}_IMAGE=ghcr.io/lkhmm520/portloom-{role.lower()}:0.4.6\n"
+            saved_env += f"PORTLOOM_{role}_IMAGE_ID=sha256:{digit * 64}\n"
+        (home / ".env").write_text(saved_env)
+        (home / "compose.yml").write_text("# original Compose fixture\n")
+        state.write_text("false\n")
+        guard = subprocess.run([
+            str(installer), "--home", str(home), "--domain", domain, "--version", "0.5.0",
+            *[arg for key in ("WEB", "SSH", "HTTP", "HTTPS") for arg in (f"--{key.lower()}-port", ports[key])],
+        ], env={**env, "PORTLOOM_GATEWAY_PORT": ports["GATEWAY"]}, capture_output=True, text=True)
+        self.assertNotEqual(0, guard.returncode)
+        self.assertIn("running server container is not active", guard.stderr)
+        self.assertEqual(saved_env, (home / ".env").read_text())
+
+        state.write_text("true\n")
+        failed = subprocess.run(["bash", "-c", snippet], cwd=work, env={**env, "FAIL_ARCHIVE": "yes"},
+                                capture_output=True, text=True)
+        self.assertEqual(42, failed.returncode, failed.stderr)
+        self.assertEqual(["stop", "archive"], log.read_text().splitlines())
+        self.assertEqual("false\n", state.read_text())
+        self.assertEqual(saved_env, (home / ".env").read_text())
+
+        state.write_text("true\n")
+        log.unlink()
+        upgraded = subprocess.run(["bash", "-c", snippet], cwd=work, env=env, capture_output=True, text=True)
+        self.assertEqual(0, upgraded.returncode, upgraded.stderr)
+        self.assertEqual(["stop", "archive", "verify", "start", "up"], log.read_text().splitlines())
+        archive, = work.glob("portloom-server-v0.4.6.*/server-install.tar")
+        self.assertEqual(0o700, stat.S_IMODE(archive.parent.stat().st_mode))
+        self.assertEqual(f"/portloom-server sha256:{'a' * 64}\n/portloom-sshd sha256:{'c' * 64}\n",
+                         (archive.parent / "images.txt").read_text())
+        with tarfile.open(archive) as backup:
+            self.assertIn("ssh-hostkeys", backup.getnames())
+            self.assertIn("ssh-auth", backup.getnames())
+            for name, expected in ((".env", saved_env.encode()), ("server-data/portloom.db", b"offline state fixture")):
+                member = backup.extractfile(name)
+                assert member is not None, name
+                with member:
+                    self.assertEqual(expected, member.read())
+        self.assertEqual(saved_env, (home / "native-upgrade-backup-0.5.0/.env").read_text())
+        self.assertIn("portloom-server:0.5.0\n", (home / ".env").read_text())
 
 
 class BeginnerComposeOnboardingTest(unittest.TestCase):
@@ -65,8 +226,8 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
     def test_beginner_template_is_repeatable_pinned_and_token_safe(self):
         compose = (ROOT / "examples" / "compose.yml").read_text()
         env_template = (ROOT / "examples" / "compose.env.example").read_text()
-        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.4.6", compose)
-        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.4.6", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-server:0.5.0", compose)
+        self.assertIn("ghcr.io/lkhmm520/portloom-sshd:0.5.0", compose)
         self.assertNotIn(":latest", compose)
         self.assertIn("./data/server:/data", compose)
         self.assertIn("./data/ssh-auth:/auth", compose)
@@ -122,10 +283,12 @@ class BeginnerComposeOnboardingTest(unittest.TestCase):
         for relative in current_pages:
             text = (ROOT / relative).read_text()
             with self.subTest(path=relative):
-                self.assertIn("0.4.6", text)
+                self.assertIn("0.5.0", text)
                 self.assertNotIn("0.4.0", text)
                 self.assertNotIn("0.4.1", text)
                 self.assertNotIn("0.4.2", text)
+                if not relative.endswith(("backup-upgrade.md", "release-checklist.md")):
+                    self.assertNotIn("0.4.6", text)
 
     def test_public_copy_does_not_imply_a_required_portloom_subdomain(self):
         public_files = [ROOT / "README.md", ROOT / "README.en.md", ROOT / "web" / "index.html"]

@@ -1,7 +1,7 @@
 name: portloom-agent
 services:
   agent:
-    image: ${PORTLOOM_AGENT_IMAGE:-ghcr.io/lkhmm520/portloom-agent:latest}
+    image: ${PORTLOOM_AGENT_IMAGE:-ghcr.io/lkhmm520/portloom-agent:0.5.0}
     container_name: portloom-agent
     restart: unless-stopped
     network_mode: host

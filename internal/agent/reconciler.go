@@ -74,6 +74,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 		}
 	}
 
+	// Eligible routes share a startup failure for this cycle only. A later
+	// reconcile retries if the master is still not ready.
+	var masterStartupErr error
 	for _, route := range desired.Routes {
 		observation := RouteObservation{RouteID: route.ID}
 		if route.ID == "" || seen[route.ID] {
@@ -165,9 +168,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired DesiredState) Observ
 			continue
 		}
 		if !r.masterReady {
-			if err := r.runner.EnsureMaster(ctx); err != nil {
+			if masterStartupErr == nil {
+				masterStartupErr = r.runner.EnsureMaster(ctx)
+			}
+			if masterStartupErr != nil {
 				observation.TunnelStatus = StatusError
-				observation.Error = fmt.Sprintf("ensure SSH master: %v", err)
+				observation.Error = fmt.Sprintf("ensure SSH master: %v", masterStartupErr)
 				observed.Routes = append(observed.Routes, observation)
 				continue
 			}

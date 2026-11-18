@@ -144,7 +144,7 @@
 
   function updateContextAction() {
     const actions = {
-      tokens: { label: "context.generateAgent", shortLabel: "context.generateAgentShort", action: "token" },
+      clients: { label: "context.addClient", shortLabel: "context.addClientShort", action: "token" },
       routes: { label: "context.addRoute", shortLabel: "context.addRouteShort", action: "route" }
     };
     const config = actions[state.view];
@@ -178,6 +178,7 @@
     if (state.apiOnline !== null) setAPIState(state.apiOnline);
     setLoading(state.loading);
     if (state.loaded) renderAll();
+    if ($("#route-dialog")?.open) updateRouteDialogCopy($("#route-form"));
   }
 
   function toggleLocale() {
@@ -240,6 +241,40 @@
 
   function renderAll() {
     renderDashboard(); renderTraffic(); renderResources(); renderClients(); renderTokens(); renderRoutes(); populateClientSelect();
+    renderEntryNode();
+  }
+
+  function entryNodeDetails(system, origin) {
+    return {
+      managementURL: origin, version: system.version, managedSSH: system.managed_ssh,
+      sshPort: system.managed_ssh === true ? system.ssh_port : undefined,
+      webPortEdge: system.web_port_edge, tcpEdge: system.tcp_edge,
+      tcpBindHost: system.tcp_edge === true ? system.tcp_bind_host : undefined,
+      udpEdge: system.udp_edge
+    };
+  }
+
+  function renderEntryNode() {
+    const node = entryNodeDetails(state.system, location.origin);
+    const notReported = t("entry.notReported");
+    const setting = value => t(value === true ? "entry.enabled" : value === false ? "entry.disabled" : "entry.notReported");
+    const rows = (selector, fields) => {
+      $(selector).replaceChildren(...fields.map(([label, value]) => {
+        const row = el("div");
+        row.append(el("dt", "", t(label)), el("dd", "", value || notReported));
+        return row;
+      }));
+    };
+    rows("#entry-management", [["entry.consoleOrigin", node.managementURL], ["entry.version", node.version]]);
+    rows("#entry-ssh", [
+      ["entry.managedSSH", setting(node.managedSSH)], ["entry.sshHost", notReported],
+      ["entry.sshPort", node.managedSSH === false ? t("entry.notApplicable") : node.sshPort]
+    ]);
+    rows("#entry-public", [
+      ["entry.webPorts", setting(node.webPortEdge)], ["entry.tcp", setting(node.tcpEdge)],
+      ...(node.tcpEdge === true ? [["entry.tcpBindHost", node.tcpBindHost]] : []),
+      ["entry.udp", setting(node.udpEdge)]
+    ]);
   }
 
   function formatBytes(value) {
@@ -461,7 +496,12 @@
 
   function switchView(view) {
     state.view = view;
-    $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view));
+    $$(".nav-item").forEach(item => {
+      const current = item.dataset.view === view;
+      item.classList.toggle("active", current);
+      if (current) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    });
     $$(".view").forEach(section => section.classList.toggle("active", section.id === `view-${view}`));
     $("#page-title").textContent = t(`page.${view}`);
     updateContextAction();
@@ -537,14 +577,19 @@
     $("#route-strip-field").hidden = stream;
     form.elements.domain.required = !stream;
     form.elements.public_port.required = stream;
-    $("#route-public-port-hint").textContent = t(stream ? "form.publicPortStream" : "form.publicPortWeb");
+    updateRouteDialogCopy(form);
     if (stream && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = protocol;
     if (!stream && !form.elements.tunnel_group.value) form.elements.tunnel_group.value = "web";
   }
 
+  function updateRouteDialogCopy(form) {
+    $("#route-dialog-title").textContent = t($("#route-id").value ? "dialog.editRoute" : "dialog.addRoute");
+    const stream = ["tcp", "udp"].includes(form.elements.protocol.value);
+    $("#route-public-port-hint").textContent = t(stream ? "form.publicPortStream" : "form.publicPortWeb");
+  }
+
   function openRouteDialog(route) {
     const form = $("#route-form"); form.reset(); $("#route-form-error").hidden = true;
-    $("#route-dialog-title").textContent = t(route ? "dialog.editRoute" : "dialog.addRoute");
     $("#route-id").value = route?.id || "";
     const tcpOption = form.elements.protocol.querySelector('option[value="tcp"]');
     tcpOption.disabled = !state.system?.tcp_edge && route?.protocol !== "tcp";

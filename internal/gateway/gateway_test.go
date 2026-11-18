@@ -3,9 +3,12 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -51,6 +54,101 @@ func serveGateway(t *testing.T, handler http.Handler) *httptest.ResponseRecorder
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestGatewayStripsUntrustedServingEvidence(t *testing.T) {
+	for _, tc := range []struct{ name, id, want string }{
+		{"unconfigured", "", ""},
+		{"configured", "trusted-node", "trusted-node"},
+		{"invalid", "forged, trusted-node", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testGatewayServingEvidence(t, tc.id, tc.want) })
+	}
+}
+
+func testGatewayServingEvidence(t *testing.T, id, want string) {
+	t.Helper()
+	const routeID = "actual-route"
+	headers := []string{"PortLoom-Serving-Node", "PortLoom-Serving-Route"}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range headers {
+			if got := r.Header.Values(header); len(got) != 0 {
+				t.Errorf("upstream received caller %s evidence: %v", header, got)
+			}
+			w.Header().Add(header, "upstream-claim")
+		}
+		w.WriteHeader(http.StatusEarlyHints)
+		for _, header := range headers {
+			w.Header().Add(header, "second-upstream-claim")
+		}
+		w.Header().Add("Trailer", "PortLoom-Serving-Route")
+		w.Header().Add("Trailer", "X-Application-Trailer")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "application body")
+		w.Header().Set(http.TrailerPrefix+headers[0], "late-upstream-claim")
+		w.Header().Set(headers[1], "announced-upstream-claim")
+		w.Header().Set("X-Application-Trailer", "keep me")
+	}))
+	t.Cleanup(backend.Close)
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	source := &staticRouteSource{routes: []domain.Route{{
+		ID: routeID, Protocol: domain.ProtocolHTTPS, Domain: "app.example.com", RemotePort: port,
+		Enabled: true, DesiredRevision: 3, ObservedRevision: 3, TunnelStatus: "up", AgentLastSeenAt: time.Now(),
+	}}}
+	handler := New(source, WithServingNodeID(id))
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "app.example.com"
+	for _, header := range headers {
+		req.Header.Set(header, "caller-claim")
+	}
+	var earlyHints atomic.Int32
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, info textproto.MIMEHeader) error {
+			if code == http.StatusEarlyHints {
+				earlyHints.Add(1)
+				for _, header := range headers {
+					if got := info.Values(header); len(got) != 0 {
+						t.Errorf("gateway passed upstream informational %s: %v", header, got)
+					}
+				}
+			}
+			return nil
+		},
+	}))
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "application body" {
+		t.Fatalf("unexpected response: status=%d body=%q err=%v", resp.StatusCode, body, err)
+	}
+	wantRoute := ""
+	if want != "" {
+		wantRoute = routeID
+	}
+	for i, expected := range []string{want, wantRoute} {
+		header := headers[i]
+		if got := resp.Header.Values(header); expected == "" && len(got) != 0 || expected != "" && (len(got) != 1 || got[0] != expected) {
+			t.Errorf("gateway %s identity = %v, want %q", header, got, expected)
+		}
+		if got := resp.Trailer.Values(header); len(got) != 0 {
+			t.Errorf("gateway passed upstream identity trailer %s: %v", header, got)
+		}
+	}
+	if earlyHints.Load() != 1 {
+		t.Errorf("early hints count = %d", earlyHints.Load())
+	}
+
+	if got := resp.Trailer.Get("X-Application-Trailer"); got != "keep me" {
+		t.Errorf("unrelated trailer = %q", got)
+	}
 }
 
 func TestGatewayDynamicallyProxiesEnabledConvergedRouteByHost(t *testing.T) {

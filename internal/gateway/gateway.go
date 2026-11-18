@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,6 +21,9 @@ import (
 type RouteSource interface {
 	ListRoutes(context.Context) ([]domain.Route, error)
 }
+
+// ServingRouteHeader identifies the route selected by a trusted gateway.
+const ServingRouteHeader = "PortLoom-Serving-Route"
 
 // Edge describes the listener a request entered through. The zero value is
 // the legacy scheme-agnostic gateway listener that matches default-port
@@ -53,6 +59,7 @@ type Handler struct {
 	transport             *http.Transport
 	isolatedAgentBindings bool
 	httpsRedirectPort     int
+	servingNodeID         string
 	observer              TrafficObserver
 }
 
@@ -76,6 +83,17 @@ func WithHTTPSRedirect(port int) Option {
 // WithTrafficObserver wires per-route traffic accounting.
 func WithTrafficObserver(observer TrafficObserver) Option {
 	return func(handler *Handler) { handler.observer = observer }
+}
+
+// WithServingNodeID sets the fixed identity emitted on proxied responses.
+// Empty or invalid IDs leave the gateway unmarked; upstream claims are always removed.
+func WithServingNodeID(id string) Option {
+	return func(h *Handler) {
+		h.servingNodeID = ""
+		if domain.ValidServingNodeID(id) {
+			h.servingNodeID = id
+		}
+	}
 }
 
 func New(routes RouteSource, options ...Option) *Handler {
@@ -174,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func httpsRouteEnabled(routes []domain.Route, host string) bool {
 	for i := range routes {
-		if routes[i].Protocol == domain.ProtocolHTTPS && routes[i].Domain == host && routes[i].Enabled {
+		if routes[i].Protocol == domain.ProtocolHTTPS && routes[i].Domain == host && routes[i].Enabled && !routes[i].PublicationBlocked {
 			return true
 		}
 	}
@@ -200,6 +218,7 @@ func (h *Handler) proxy(w http.ResponseWriter, r *http.Request, selected *domain
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target)
+			stripServingEvidence(request.Out.Header)
 			request.Out.Host = request.In.Host
 			if stripPrefix != "" {
 				trimmed := strings.TrimPrefix(request.Out.URL.Path, stripPrefix)
@@ -211,7 +230,23 @@ func (h *Handler) proxy(w http.ResponseWriter, r *http.Request, selected *domain
 			}
 			request.SetXForwarded()
 		},
-		Transport: h.transport,
+		Transport: servingEvidenceTransport{h.transport},
+		ModifyResponse: func(resp *http.Response) error {
+			stripServingEvidence(resp.Header)
+			if h.servingNodeID != "" {
+				resp.Header.Set(domain.ServingNodeHeader, h.servingNodeID)
+				if ValidServingRouteID(selected.ID) {
+					resp.Header.Set(ServingRouteHeader, selected.ID)
+				}
+			}
+			stripServingEvidence(resp.Trailer)
+			// A trailer can first appear at EOF, even if it wasn't announced.
+			// Leave upgraded bodies untouched: ReverseProxy needs their writer.
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				resp.Body = servingEvidenceBody{resp.Body, resp}
+			}
+			return nil
+		},
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		log.Printf("gateway upstream failure for host %q: %v", host, err)
@@ -226,6 +261,44 @@ func (h *Handler) proxy(w http.ResponseWriter, r *http.Request, selected *domain
 		return
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// ValidServingRouteID accepts a single, exact HTTP field value, not a list.
+func ValidServingRouteID(id string) bool { return domain.ValidServingNodeID(id) }
+
+func stripServingEvidence(header http.Header) {
+	header.Del(domain.ServingNodeHeader)
+	header.Del(ServingRouteHeader)
+}
+
+type servingEvidenceTransport struct{ http.RoundTripper }
+
+func (t servingEvidenceTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	// Run before ReverseProxy's own hook copies informational headers.
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(_ int, header textproto.MIMEHeader) error {
+		stripServingEvidence(http.Header(header))
+		return nil
+	}}
+	return t.RoundTripper.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), trace)))
+}
+
+type servingEvidenceBody struct {
+	io.ReadCloser
+	response *http.Response
+}
+
+func (b servingEvidenceBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		stripServingEvidence(b.response.Trailer)
+	}
+	return n, err
+}
+
+func (b servingEvidenceBody) Close() error {
+	err := b.ReadCloser.Close()
+	stripServingEvidence(b.response.Trailer)
+	return err
 }
 
 type countingResponseWriter struct {

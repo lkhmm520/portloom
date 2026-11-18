@@ -32,6 +32,8 @@ def compose_services(path: pathlib.Path, *, interpolate: bool) -> dict[str, dict
             "compose",
             "--project-directory",
             str(workspace),
+            "--profile",
+            "*",
             "-f",
             str(compose),
             "config",

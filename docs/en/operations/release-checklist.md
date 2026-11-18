@@ -1,6 +1,6 @@
 # Release acceptance checklist
 
-This page is for maintainers. A v0.4 release cannot be accepted by testing only the old HTTPS hostname route.
+This page is for maintainers. Run both baseline routing and v0.5 cutover acceptance.
 
 ## Release order
 
@@ -11,7 +11,7 @@ This page is for maintainers. A v0.4 release cannot be accepted by testing only 
 
 ## Artifacts and clean install
 
-Set `VERSION` to the exact v0.4 release candidate (for example `0.4.6`) first. Every image, install command, and runtime version below must use that same value.
+Set `VERSION` to the exact v0.5 release candidate (for example `0.5.0`) first. Every image, install command, and runtime version below must use that same value.
 
 - [ ] Both public installer URLs return 200, non-empty scripts, and pass `bash -n`.
 - [ ] All four `$VERSION` images exist, and dual-architecture revisions match the tag commit.
@@ -20,7 +20,7 @@ Set `VERSION` to the exact v0.4 release candidate (for example `0.4.6`) first. E
 - [ ] The generated Agent command uses the same version, and a clean NAS install removes the one-time token from `.env`.
 - [ ] A Synology/QNAP-like host covers PATH, Docker daemon, Compose-v2 fallback, and Agent installation without `flock`.
 
-## v0.4 feature acceptance
+## Baseline routing acceptance
 
 - [ ] Default HTTPS hostname route: certificate, HTTP 308, Host, WebSocket/Range.
 - [ ] Real HTTP route: no certificate issuance and no forced redirect.
@@ -32,9 +32,16 @@ Set `VERSION` to the exact v0.4 release candidate (for example `0.4.6`) first. E
 - [ ] Dashboard: 60-minute series, totals, Server/Agent CPU/RSS, reset after Server restart; metrics API: per-route counters.
 - [ ] Add Agent token deletion: unused command fails while enrolled Agent remains unaffected.
 
+## v0.5 cutover acceptance
+
+- [ ] `make cutover-e2e` passes with isolated Server/Agent pairs, managed SSH, TLS canaries and a real RFC 2136 authority; verify both forward and rollback, including refusal at the inactive edge.
+- [ ] `./tests/downgrade_interlock_test.sh` builds the exact v0.4.6 Server and verifies that it refuses gated data before listening, even after gate release.
+- [ ] From the clean tag checkout, `EXPECTED_REVISION="$(git rev-parse HEAD)" make release-portloomctl` verifies release-revision metadata for Linux amd64 and arm64 and smoke-tests the native asset. The final GitHub Release has both binaries and the matching `SHA256SUMS`; verify downloaded bytes on a rerun without replacing assets.
+- [ ] Before finalization, the production beginner Compose, docs image and installers match the exact tag; local gates do not certify live production.
+
 ## Upgrade and rollback
 
-- [ ] Upgrade a v0.3.x database to current v0.4.6 and verify legacy `http` becomes `https` with unchanged old public behavior.
+- [ ] Upgrade a v0.3.x database to `$VERSION` and verify legacy `http` becomes `https` with unchanged old public behavior.
 - [ ] Save consistent `server-data` before upgrade because config backup excludes the database.
 - [ ] A failed Server version restores old config/image IDs automatically.
 - [ ] Complete a real v0.3.x rollback with the pre-upgrade database.

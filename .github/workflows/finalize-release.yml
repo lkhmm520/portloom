@@ -23,6 +23,8 @@ jobs:
   verify-production:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
     permissions:
       contents: read
     outputs:
@@ -32,6 +34,8 @@ jobs:
       major: ${{ steps.release.outputs.major }}
       minor: ${{ steps.release.outputs.minor }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      cli-checksums: ${{ steps.cli.outputs.checksums }}
+      cli-artifact-id: ${{ steps.cli-artifact.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -129,6 +133,28 @@ jobs:
           [ "$compose_matched" = true ] || { echo 'production Compose unavailable or stale' >&2; exit 1; }
           scripts/verify-release-compose.py --version "$VERSION" /tmp/production-compose.yml
           curl --fail --silent --show-error --connect-timeout 5 --max-time 20 https://docs.look4i.com/ >/dev/null
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version-file: go.mod, cache: false }
+      - name: Build portloomctl from the exact release tag
+        id: cli
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          make release-portloomctl
+          cd bin/release/portloomctl
+          sha256sum --check SHA256SUMS
+          digest=$(sha256sum SHA256SUMS)
+          echo "checksums=${digest%% *}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: cli-artifact
+        with:
+          name: portloomctl-${{ steps.release.outputs.tag }}-${{ github.run_attempt }}
+          path: |
+            bin/release/portloomctl/portloomctl-linux-amd64
+            bin/release/portloomctl/portloomctl-linux-arm64
+            bin/release/portloomctl/SHA256SUMS
+          if-no-files-found: error
 
   promote-stable-channels:
     needs: verify-production
@@ -215,28 +241,49 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify-production.outputs.cli-artifact-id }}
+          path: cli-release
+          merge-multiple: true
       - name: Create or validate idempotent GitHub Release
+        shell: bash
+        working-directory: cli-release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.verify-production.outputs.tag }}
           EXPECTED_PRERELEASE: ${{ needs.verify-production.outputs.prerelease }}
           EXPECTED_REVISION: ${{ needs.verify-production.outputs.revision }}
+          EXPECTED_CLI_CHECKSUMS: ${{ needs.verify-production.outputs.cli-checksums }}
         run: |
+          binaries=(portloomctl-linux-amd64 portloomctl-linux-arm64)
+          assets=("${binaries[@]}" SHA256SUMS)
+          [[ "$EXPECTED_CLI_CHECKSUMS" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          printf '%s  SHA256SUMS\n' "$EXPECTED_CLI_CHECKSUMS" | sha256sum --check
+          sha256sum "${binaries[@]}" | cmp - SHA256SUMS
+
           revision_marker="PortLoom-Revision: $EXPECTED_REVISION"
-          if state=$(gh release view "$TAG" --json tagName,isDraft,isPrerelease,body 2>/dev/null); then
-            [ "$(jq -r .tagName <<<"$state")" = "$TAG" ] || { echo 'existing Release tag mismatch' >&2; exit 1; }
-            [ "$(jq -r .isDraft <<<"$state")" = false ] || { echo 'existing Release is unexpectedly a draft' >&2; exit 1; }
-            [ "$(jq -r .isPrerelease <<<"$state")" = "$EXPECTED_PRERELEASE" ] || { echo 'existing Release prerelease state mismatch' >&2; exit 1; }
-            grep -Fxq "$revision_marker" < <(jq -r .body <<<"$state") || { echo 'existing Release revision marker mismatch' >&2; exit 1; }
-            echo "GitHub Release already exists with the expected state: $TAG"
-          else
+          if ! state=$(gh release view "$TAG" --json tagName,isDraft,isPrerelease,body 2>/dev/null); then
+            args=()
             if [ "$EXPECTED_PRERELEASE" = true ]; then
-              gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG" --prerelease
-            else
-              gh release create "$TAG" --verify-tag --generate-notes --notes "$revision_marker" --title "PortLoom $TAG"
+              args+=(--prerelease)
             fi
+            gh release create "$TAG" "${assets[@]}" --verify-tag --generate-notes \
+              --notes "$revision_marker" --title "PortLoom $TAG" "${args[@]}"
+            state=$(gh release view "$TAG" --json tagName,isDraft,isPrerelease,body)
           fi
+          [ "$(jq -r .tagName <<<"$state")" = "$TAG" ] || { echo 'Release tag mismatch' >&2; exit 1; }
+          [ "$(jq -r .isDraft <<<"$state")" = false ] || { echo 'Release is unexpectedly a draft' >&2; exit 1; }
+          [ "$(jq -r .isPrerelease <<<"$state")" = "$EXPECTED_PRERELEASE" ] || { echo 'Release prerelease state mismatch' >&2; exit 1; }
+          grep -Fxq "$revision_marker" < <(jq -r .body <<<"$state") || { echo 'Release revision marker mismatch' >&2; exit 1; }
+          download=$(mktemp -d)
+          trap 'rm -rf -- "$download"' EXIT
+          for asset in "${assets[@]}"; do
+            gh release download "$TAG" --pattern "$asset" --dir "$download"
+            cmp --silent "$asset" "$download/$asset" || { echo "Release asset missing or mismatched: $asset" >&2; exit 1; }
+          done
+          echo "GitHub Release matches the expected state and assets: $TAG"
 
   cleanup-marker:
     needs: [verify-production, promote-stable-channels, create-release]

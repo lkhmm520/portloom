@@ -60,8 +60,10 @@ type Route struct {
 	LastError        string    `json:"last_error,omitempty"`
 	AgentLastSeenAt  time.Time `json:"agent_last_seen_at,omitempty"`
 	PublicStatus     string    `json:"public_status,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// PublicationBlocked is a server-only projection, not Agent desired state.
+	PublicationBlocked bool      `json:"-"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 const AgentHeartbeatFreshness = 90 * time.Second
@@ -90,7 +92,7 @@ func (r Route) PublicationReady() bool {
 
 // PublicationReadyAt is the deterministic form used by tests and status APIs.
 func (r Route) PublicationReadyAt(now time.Time) bool {
-	if !r.Enabled || r.TunnelStatus != "up" ||
+	if r.PublicationBlocked || !r.Enabled || r.TunnelStatus != "up" ||
 		r.ObservedRevision < r.DesiredRevision || r.AgentLastSeenAt.IsZero() {
 		return false
 	}

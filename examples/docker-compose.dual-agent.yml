@@ -1,6 +1,6 @@
 name: portloom-agents
 x-agent-common: &agent-common
-  image: ${PORTLOOM_AGENT_IMAGE:-ghcr.io/lkhmm520/portloom-agent:latest}
+  image: ${PORTLOOM_AGENT_IMAGE:-ghcr.io/lkhmm520/portloom-agent:0.5.0}
   restart: unless-stopped
   network_mode: host
   read_only: true

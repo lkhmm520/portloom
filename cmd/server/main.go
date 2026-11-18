@@ -46,6 +46,8 @@ type config struct {
 	ManagedSSHPort       int
 	ManagedSSHIsolated   bool
 	PublicHost           string
+	ServingNodeID        string
+	EnableCutover        bool
 	TLSAskToken          string
 	TLSAskAddr           string
 	EdgeHTTPAddr         string
@@ -97,10 +99,16 @@ func loadConfig(getenv envLookup) (config, error) {
 	setString("TM_ACME_EMAIL", &cfg.ACMEEmail)
 	cfg.AdminToken = strings.TrimSpace(getenv("TM_ADMIN_TOKEN"))
 	var err error
+	if cfg.ServingNodeID, err = loadServingNodeID(getenv); err != nil {
+		return config{}, err
+	}
 	if cfg.ManagedSSHPort, err = envInt(getenv, "TM_MANAGED_SSH_PORT", cfg.ManagedSSHPort); err != nil {
 		return config{}, err
 	}
 	if cfg.ManagedSSHIsolated, err = envBool(getenv, "TM_MANAGED_SSH_ISOLATED"); err != nil {
+		return config{}, err
+	}
+	if cfg.EnableCutover, err = envBool(getenv, "TM_ENABLE_CUTOVER"); err != nil {
 		return config{}, err
 	}
 	if cfg.PortRangeStart, err = envInt(getenv, "TM_PORT_RANGE_START", cfg.PortRangeStart); err != nil {
@@ -133,6 +141,9 @@ func loadConfig(getenv envLookup) (config, error) {
 	}
 	if cfg.TLSAskToken != "" && cfg.PublicHost == "" {
 		return config{}, errors.New("TM_TLS_ASK_TOKEN requires TM_PUBLIC_HOST")
+	}
+	if cfg.EnableCutover && cfg.PublicHost == "" {
+		return config{}, errors.New("TM_ENABLE_CUTOVER requires TM_PUBLIC_HOST")
 	}
 	if cfg.PublicHost != "" {
 		publicHost, valid := domain.NormalizeDNSHost(cfg.PublicHost)
@@ -270,7 +281,7 @@ func run(ctx context.Context, getenv envLookup) error {
 		}
 		tcpManager = tcpedge.New(state, tcpOptions...)
 	}
-	gatewayOptions := []gateway.Option{gateway.WithTrafficObserver(trafficMetrics)}
+	gatewayOptions := []gateway.Option{gateway.WithTrafficObserver(trafficMetrics), gateway.WithServingNodeID(cfg.ServingNodeID)}
 	if cfg.ManagedSSHIsolated {
 		gatewayOptions = append(gatewayOptions, gateway.WithIsolatedAgentBindings())
 	}
@@ -303,7 +314,8 @@ func run(ctx context.Context, getenv envLookup) error {
 		SSHHostPublicKeyPath: cfg.SSHHostPublicKeyPath, ManagedSSHPort: cfg.ManagedSSHPort,
 		ManagedSSHIsolated: cfg.ManagedSSHIsolated, ServerVersion: version,
 		PublicHost: cfg.PublicHost, TLSAskToken: cfg.TLSAskToken,
-		TCPEnabled: tcpManager != nil, UDPEnabled: tcpManager != nil, TCPBindHost: cfg.TCPBindHost,
+		EnableCutover: cfg.EnableCutover,
+		TCPEnabled:    tcpManager != nil, UDPEnabled: tcpManager != nil, TCPBindHost: cfg.TCPBindHost,
 		TCPPortReserved: func(port int) bool { return tcpPortReserved(cfg, port) },
 		Metrics:         trafficMetrics, ServerStats: serverStats.Sample, AgentSystemInfo: agentSystemInfo,
 	}

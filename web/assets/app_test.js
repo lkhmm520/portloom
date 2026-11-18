@@ -186,7 +186,7 @@ test("route creation exposes HTTP and TCP with an explicit public port", () => {
   assert.match(routeForm, /value="http"/i);
   assert.match(routeForm, /value="tcp"/i);
   assert.match(routeForm, /name="public_port"/i);
-  assert.match(html, /TCP routes publish an explicit VPS port/i);
+  assert.match(html, /TCP\/UDP mappings require a public port/i);
 
   const payload = app.match(/function routePayload\(form\)[\s\S]*?\n  }/)?.[0] || "";
   assert.match(payload, /form\.elements\.protocol\.value/);
@@ -419,7 +419,7 @@ test("console defaults to complete Simplified Chinese and can persistently switc
   for (const locale of ["zh-CN", "en"]) {
     for (const key of keys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing ${key}`);
   }
-  const dynamicKeys = [...app.matchAll(/["']((?:common|language|meta|login|brand|nav|api|top|updated|page|context|metrics|dashboard|clients|tokens|routes|table|dialog|form|agent|confirm|status|error)\.[A-Za-z][A-Za-z0-9_.-]*)["']/g)].map(match => match[1]);
+  const dynamicKeys = [...app.matchAll(/["']((?:common|language|meta|login|brand|nav|api|top|updated|page|context|metrics|dashboard|clients|tokens|routes|table|dialog|form|agent|confirm|status|error|entry)\.[A-Za-z][A-Za-z0-9_.-]*)["']/g)].map(match => match[1]);
   assert.ok(dynamicKeys.includes("context.addRouteShort"), "configured runtime keys are included in the dynamic translation audit");
   for (const locale of ["zh-CN", "en"]) {
     for (const key of dynamicKeys) assert.ok(Object.hasOwn(i18n.messages[locale], key), `${locale} is missing runtime key ${key}`);
@@ -438,6 +438,36 @@ test("client count is grammatical in English", () => {
   const label = Function("t", `"use strict"; ${source}; return clientCountLabel;`)((key, params) => i18n.translate("en", key, params));
   assert.equal(label(1), "1 client");
   assert.equal(label(2), "2 clients");
+});
+
+test("entry overview separates the open console from reported SSH and edge capabilities", () => {
+  const source = app.match(/function entryNodeDetails\(system, origin\)[\s\S]*?\n  }/)?.[0];
+  assert.ok(source, "entry node uses live system metadata");
+  const details = Function(`${source}; return entryNodeDetails;`)();
+  const origin = "https://console.example.com";
+  assert.deepEqual(details({ version: "v1.2.3", managed_ssh: true, ssh_port: 2222,
+    ssh_host_key: "not for display", tcp_edge: true, tcp_bind_host: "::", udp_edge: false }, origin), {
+    managementURL: origin, version: "v1.2.3", managedSSH: true, sshPort: 2222,
+    webPortEdge: undefined, tcpEdge: true, tcpBindHost: "::", udpEdge: false
+  });
+  assert.deepEqual(details({ managed_ssh: false, ssh_port: 2222, tcp_edge: false, tcp_bind_host: "::" }, origin), {
+    managementURL: origin, version: undefined, managedSSH: false, sshPort: undefined,
+    webPortEdge: undefined, tcpEdge: false, tcpBindHost: undefined, udpEdge: undefined
+  });
+});
+
+test("primary navigation exposes mappings, clients and entry nodes in both languages", () => {
+  const { translate } = require("./i18n.js");
+  assert.deepEqual([...html.matchAll(/class="nav-item[^"\n]*" data-view="([\w-]+)"/g)].map(match => match[1]),
+    ["dashboard", "clients", "routes", "entry-nodes"]);
+  for (const [locale, mapping, client, entry] of [
+    ["en", "Mappings", "Clients", "Entry nodes"], ["zh-CN", "映射", "客户端", "入口节点"]
+  ]) {
+    assert.equal(translate(locale, "nav.routes"), mapping);
+    assert.equal(translate(locale, "nav.clients"), client);
+    assert.equal(translate(locale, "nav.entryNodes"), entry);
+  }
+  assert.match(html, /id="view-clients"[^>]*>(?:(?!<\/section>)[\s\S])*id="tokens-body"/);
 });
 
 test("TCP automatic port exposure is localized", () => {
@@ -598,10 +628,10 @@ test("each module uses one sticky title and action row", () => {
   assert.match(topbar, /id="context-action-button"/);
   assert.match(topbar, /id="refresh-button"/);
   assert.match(topbar, /data-language-toggle/);
-  assert.doesNotMatch(html.match(/<section id="view-tokens"[\s\S]*?<\/section>/)?.[0] || "", /id="new-token-button"/);
+  assert.doesNotMatch(html.match(/<section id="view-clients"[\s\S]*?<\/section>/)?.[0] || "", /id="new-token-button"/);
   assert.doesNotMatch(html.match(/<section id="view-routes"[\s\S]*?<\/section>/)?.[0] || "", /id="new-route-button"/);
   assert.doesNotMatch(html.match(/<section id="view-clients"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="clients\.title"/);
-  assert.doesNotMatch(html.match(/<section id="view-tokens"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="tokens\.addAgent"/);
+
   assert.doesNotMatch(html.match(/<section id="view-routes"[\s\S]*?<\/section>/)?.[0] || "", /<h2[^>]*data-i18n="routes\.title"/);
 
   const topbarCSS = css.match(/\.topbar\s*\{[^}]+\}/)?.[0] || "";
@@ -609,6 +639,6 @@ test("each module uses one sticky title and action row", () => {
   assert.match(topbarCSS, /top:\s*0/);
   assert.match(topbarCSS, /z-index:\s*\d+/);
   assert.match(app, /function updateContextAction\(\)/);
-  assert.match(app, /tokens:[\s\S]*context\.generateAgent/);
+  assert.match(app, /clients:[^\n]*context\.addClient/);
   assert.match(app, /routes:[\s\S]*context\.addRoute/);
 });

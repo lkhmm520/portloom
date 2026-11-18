@@ -3,19 +3,21 @@ package agent
 import (
 	"context"
 	"errors"
-	"github.com/lkhmm520/portloom/internal/domain"
-	"github.com/lkhmm520/portloom/internal/managedssh"
-	"github.com/lkhmm520/portloom/internal/sshctl"
 	"net"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/lkhmm520/portloom/internal/domain"
+	"github.com/lkhmm520/portloom/internal/managedssh"
+	"github.com/lkhmm520/portloom/internal/sshctl"
 )
 
 type fakeRunner struct {
 	masters         int
 	checks          int
 	added, removed  []sshctl.Forward
+	ensureErr       error
 	addErr          error
 	checkErr        error
 	cancelErr       error
@@ -27,6 +29,9 @@ type fakeRunner struct {
 
 func (r *fakeRunner) EnsureMaster(context.Context) error {
 	r.masters++
+	if r.ensureErr != nil {
+		return r.ensureErr
+	}
 	r.masterPresent = true
 	return nil
 }
@@ -125,12 +130,17 @@ func TestReconcilerDoesNotForwardUnhealthyOrInvalidRoute(t *testing.T) {
 	route := testRoute()
 	x := NewReconciler(r, fakeChecker{errors: map[string]error{"127.0.0.1:8080": errors.New("connection refused")}})
 	o := x.Reconcile(context.Background(), DesiredState{Revision: 1, Routes: []domain.Route{route}})
-	if len(r.added) != 0 || o.Routes[0].LocalStatus != StatusDown || o.Routes[0].TunnelStatus != StatusDown || o.Routes[0].Error == "" {
+	if r.masters != 0 || len(r.added) != 0 || o.Routes[0].LocalStatus != StatusDown || o.Routes[0].TunnelStatus != StatusDown || o.Routes[0].Error == "" {
 		t.Fatalf("observed=%#v", o)
 	}
 	route.LocalHost = "127.0.0.1;bad"
 	o = x.Reconcile(context.Background(), DesiredState{Revision: 2, Routes: []domain.Route{route}})
-	if o.Routes[0].TunnelStatus != StatusError {
+	if r.masters != 0 || len(r.added) != 0 || o.Routes[0].TunnelStatus != StatusError {
+		t.Fatalf("observed=%#v", o)
+	}
+	route.Enabled = false
+	o = x.Reconcile(context.Background(), DesiredState{Revision: 3, Routes: []domain.Route{route}})
+	if r.masters != 0 || len(r.added) != 0 || o.Routes[0].TunnelStatus != StatusDisabled {
 		t.Fatalf("observed=%#v", o)
 	}
 }
@@ -155,6 +165,62 @@ func TestReconcilerRebuildsActiveRoutesWhenControlMasterDisconnects(t *testing.T
 		t.Fatalf("observed=%#v", observed)
 	}
 }
+
+func TestReconcilerSharesFailedMasterStartupAcrossRoutesAndRetriesNextCycle(t *testing.T) {
+	ctx := context.Background()
+	r := &fakeRunner{}
+	x := NewReconciler(r, fakeChecker{})
+	first, second, disabled := testRoute(), testRoute(), testRoute()
+	second.ID, second.RemotePort = "r2", 14002
+	disabled.ID, disabled.RemotePort = "r3", 14003
+	desired := DesiredState{Revision: 1, Routes: []domain.Route{first, second, disabled}}
+	x.Reconcile(ctx, desired)
+	if r.masters != 1 || len(r.added) != 3 {
+		t.Fatalf("initial setup: master attempts=%d, forwards=%d", r.masters, len(r.added))
+	}
+
+	r.masterPresent = false
+	r.ensureErr = errors.New("connection refused")
+	disabled.Enabled = false
+	desired = DesiredState{Revision: 2, Routes: []domain.Route{first, second, disabled}}
+	for cycle := 1; cycle <= 2; cycle++ {
+		observed := x.Reconcile(ctx, desired)
+		if r.masters != 1+cycle || len(r.added) != 3 || r.checks != 1 || r.closeCalls != 1 || len(r.removed) != 0 {
+			t.Fatalf("outage cycle %d: master attempts=%d, forwards=%d, checks=%d, closes=%d, cancels=%d", cycle, r.masters, len(r.added), r.checks, r.closeCalls, len(r.removed))
+		}
+		if observed.Revision != 2 || len(observed.Routes) != 3 {
+			t.Fatalf("outage cycle %d: observed=%+v", cycle, observed)
+		}
+		for i, route := range []domain.Route{first, second} {
+			want := RouteObservation{RouteID: route.ID, LocalStatus: StatusUp, TunnelStatus: StatusError, Error: "ensure SSH master: connection refused"}
+			if got := observed.Routes[i]; got != want {
+				t.Errorf("outage cycle %d: observation=%+v, want %+v", cycle, got, want)
+			}
+		}
+		wantDisabled := RouteObservation{RouteID: disabled.ID, LocalStatus: StatusDisabled, TunnelStatus: StatusDisabled}
+		if got := observed.Routes[2]; got != wantDisabled {
+			t.Errorf("outage cycle %d: observation=%+v, want %+v", cycle, got, wantDisabled)
+		}
+	}
+
+	r.ensureErr = nil
+	for cycle := 1; cycle <= 2; cycle++ {
+		observed := x.Reconcile(ctx, desired)
+		if r.masters != 4 || len(r.added) != 5 || r.checks != cycle || r.closeCalls != 1 {
+			t.Fatalf("recovery cycle %d: master attempts=%d, forwards=%d, checks=%d, closes=%d", cycle, r.masters, len(r.added), r.checks, r.closeCalls)
+		}
+		if len(observed.Routes) != 3 {
+			t.Fatalf("recovery cycle %d: observed=%+v", cycle, observed)
+		}
+		for i, route := range []domain.Route{first, second} {
+			want := RouteObservation{RouteID: route.ID, LocalStatus: StatusUp, TunnelStatus: StatusUp}
+			if got := observed.Routes[i]; got != want {
+				t.Errorf("recovery cycle %d: observation=%+v, want %+v", cycle, got, want)
+			}
+		}
+	}
+}
+
 func TestReconcilerUsesFreshContextToCloseUnresponsiveMaster(t *testing.T) {
 	r := &fakeRunner{masterPresent: true, checkErr: context.DeadlineExceeded}
 	x := NewReconciler(r, fakeChecker{}, WithMasterReady())
@@ -175,21 +241,32 @@ func TestReconcilerUsesFreshContextToCloseUnresponsiveMaster(t *testing.T) {
 }
 
 func TestReconcilerDoesNotAssumeRoutesClosedWhenMasterCleanupFails(t *testing.T) {
+	ctx := context.Background()
 	r := &fakeRunner{}
 	x := NewReconciler(r, fakeChecker{})
-	route := testRoute()
-	first := x.Reconcile(context.Background(), DesiredState{Revision: 1, Routes: []domain.Route{route}})
+	route, removed := testRoute(), testRoute()
+	removed.ID, removed.RemotePort = "r2", 14002
+	first := x.Reconcile(ctx, DesiredState{Revision: 1, Routes: []domain.Route{route, removed}})
 	if first.Revision != 1 {
 		t.Fatalf("first=%#v", first)
 	}
 	r.checkErr = errors.New("control socket is unresponsive")
 	r.closeErr = errors.New("unable to confirm master termination")
 	route.Enabled = false
-	failed := x.Reconcile(context.Background(), DesiredState{Revision: 2, Routes: []domain.Route{route}})
-	if failed.Revision != 1 || len(failed.Routes) != 1 || failed.Routes[0].TunnelStatus != StatusError {
+	desired := DesiredState{Revision: 2, Routes: []domain.Route{route}}
+	failed := x.Reconcile(ctx, desired)
+	if failed.Revision != 1 || len(failed.Routes) != 2 || failed.Routes[0].RouteID != route.ID || failed.Routes[0].TunnelStatus != StatusError || failed.Routes[1].RouteID != removed.ID || failed.Routes[1].TunnelStatus != StatusError {
 		t.Fatalf("failed=%#v", failed)
 	}
 	if len(r.removed) != 0 || r.masters != 1 || r.closeCalls != 1 {
+		t.Fatalf("removed=%d masters=%d closes=%d", len(r.removed), r.masters, r.closeCalls)
+	}
+	r.closeErr = nil
+	recovered := x.Reconcile(ctx, desired)
+	if recovered.Revision != 2 || len(recovered.Routes) != 1 || recovered.Routes[0].TunnelStatus != StatusDisabled {
+		t.Fatalf("recovered=%#v", recovered)
+	}
+	if len(r.removed) != 0 || r.masters != 1 || r.closeCalls != 2 {
 		t.Fatalf("removed=%d masters=%d closes=%d", len(r.removed), r.masters, r.closeCalls)
 	}
 }

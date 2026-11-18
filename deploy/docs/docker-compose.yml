@@ -7,7 +7,7 @@ services:
       args:
         DOCS_BASE: /
         DOCS_ORIGIN: ${DOCS_ORIGIN:-https://docs.look4i.com/}
-    image: ${PORTLOOM_DOCS_IMAGE:-ghcr.io/lkhmm520/portloom-docs:latest}
+    image: ${PORTLOOM_DOCS_IMAGE:-ghcr.io/lkhmm520/portloom-docs:0.5.0}
     container_name: portloom-docs
     restart: unless-stopped
     ports:

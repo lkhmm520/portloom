@@ -23,12 +23,12 @@ Public port 80 must reach the primary HTTP edge for HTTP-01. `--http-port 8088` 
 
 Empty route `Public port` means the primary edge, not fixed 80/443. Keep it empty when the primary edge is 8088/8443; entering 8443 means an extra listener and is rejected because the primary edge reserves that port. Installer success output reports the actual WebUI URL and effective stream-edge state; still accept the deployment against `.env`, `/api/v1/system`, and end-to-end tests together.
 
-## Pin and accept v0.4 images
+## Pin and verify v0.5 images
 
 ```bash
 curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain example.com --version 0.4.6
+./install-server.sh --domain example.com --version 0.5.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
 docker compose --env-file .env -f compose.yml ps
@@ -56,7 +56,7 @@ compose.yml
 
 ## Acceptance
 
-1. `/api/v1/system` reports `0.4.6` and expected `tcp_edge`, `udp_edge`, and `web_port_edge`.
+1. `/api/v1/system` reports `0.5.0` and expected `tcp_edge`, `udp_edge`, and `web_port_edge`.
 2. HTTPS administration and HTTP 308 redirect work.
 3. Agent restarts and heartbeats after the one-time token is removed.
 4. Test HTTPS, HTTP, TCP, UDP, plus one path/custom-port route.

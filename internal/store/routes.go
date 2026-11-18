@@ -34,11 +34,13 @@ func (s *Store) webDomainEnabled(ctx context.Context, protocol, domainName strin
 	query := `SELECT EXISTS(
 		SELECT 1 FROM routes
 		WHERE protocol = 'https' AND domain = ? AND enabled = 1
+		AND NOT EXISTS (SELECT 1 FROM publication_gates WHERE host = routes.domain AND phase = 'blocked')
 	)`
 	if protocol == "http" {
 		query = `SELECT EXISTS(
 		SELECT 1 FROM routes
 		WHERE protocol = 'http' AND domain = ? AND enabled = 1
+		AND NOT EXISTS (SELECT 1 FROM publication_gates WHERE host = routes.domain AND phase = 'blocked')
 	)`
 	}
 	var enabled bool
@@ -108,6 +110,9 @@ func (s *Store) CreateRoute(ctx context.Context, route domain.Route) (domain.Rou
 	}
 	defer tx.Rollback()
 
+	if err := checkRouteNotFrozen(ctx, tx, route); err != nil {
+		return domain.Route{}, err
+	}
 	revision, err := bumpDesiredRevision(ctx, tx, route.ClientID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Route{}, ErrNotFound
@@ -164,6 +169,9 @@ func (s *Store) UpdateRoute(ctx context.Context, id string, update domain.Route)
 	if err != nil {
 		return domain.Route{}, err
 	}
+	if err := checkRouteNotFrozen(ctx, tx, current); err != nil {
+		return domain.Route{}, err
+	}
 	update.ID = current.ID
 	update.ClientID = current.ClientID
 	update.RemotePort = current.RemotePort
@@ -175,6 +183,9 @@ func (s *Store) UpdateRoute(ctx context.Context, id string, update domain.Route)
 	update.AgentLastSeenAt = current.AgentLastSeenAt
 	if err := update.Validate(); err != nil {
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if err := checkRouteNotFrozen(ctx, tx, update); err != nil {
+		return domain.Route{}, err
 	}
 	revision, err := bumpDesiredRevision(ctx, tx, current.ClientID)
 	if err != nil {
@@ -206,6 +217,9 @@ func (s *Store) DeleteRoute(ctx context.Context, id string) error {
 	defer tx.Rollback()
 	current, err := getRoute(ctx, tx, id)
 	if err != nil {
+		return err
+	}
+	if err := checkRouteNotFrozen(ctx, tx, current); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM routes WHERE id = ?`, id); err != nil {
@@ -353,7 +367,9 @@ func bumpDesiredRevision(ctx context.Context, tx *sql.Tx, agentID string) (int64
 const routeSelect = `SELECT id, client_id, name, protocol, domain, path_prefix, strip_path, local_host, local_port,
 	remote_port, public_port, tunnel_group, enabled, desired_revision, observed_revision,
 	local_status, tunnel_status, last_error,
-	(SELECT last_seen_at FROM agents WHERE id = routes.client_id), created_at, updated_at FROM routes`
+	(SELECT last_seen_at FROM agents WHERE id = routes.client_id), created_at, updated_at,
+	protocol IN ('http', 'https') AND EXISTS (SELECT 1 FROM publication_gates WHERE host = routes.domain AND phase = 'blocked')
+	FROM routes`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -378,7 +394,7 @@ func scanRoute(scanner rowScanner) (domain.Route, error) {
 		&route.PathPrefix, &route.StripPath,
 		&route.LocalHost, &route.LocalPort, &route.RemotePort, &route.PublicPort,
 		&route.TunnelGroup, &route.Enabled, &route.DesiredRevision, &route.ObservedRevision,
-		&route.LocalStatus, &route.TunnelStatus, &route.LastError, &agentLastSeen, &createdAt, &updatedAt)
+		&route.LocalStatus, &route.TunnelStatus, &route.LastError, &agentLastSeen, &createdAt, &updatedAt, &route.PublicationBlocked)
 	if err != nil {
 		return domain.Route{}, err
 	}

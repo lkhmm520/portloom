@@ -108,6 +108,16 @@ main { min-height: 100vh; margin-left: 238px; padding: 0 clamp(1rem, 3vw, 2.7rem
 .panel-heading { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
 .panel-heading .eyebrow { margin-bottom: .2rem; }
 .panel-copy { margin: 0; padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
+.client-enrollment { margin-top: 1rem; }
+.entry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 1rem; padding: 1.2rem; }
+.entry-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.entry-card h3 { margin: 0; font-size: .95rem; }
+.entry-card dl { display: grid; gap: .5rem; margin: .8rem 0 0; font-size: .8rem; }
+.entry-card dl > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem .8rem; }
+.entry-card dt { color: var(--muted); }
+.entry-card dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.entry-card p { margin: .75rem 0 0; font-size: .75rem; }
+.entry-card .text-button { margin-top: .65rem; }
 .count-pill { padding: .3rem .55rem; border-radius: 99px; background: var(--surface-3); color: var(--muted); font-size: .7rem; }
 
 .table-wrap { overflow-x: auto; }
@@ -199,7 +209,7 @@ dialog::backdrop { background: rgb(2 6 11 / 78%); backdrop-filter: blur(4px); }
   .metric-grid { gap: .65rem; }
   .metric { padding: .9rem; }
   .metric strong { font-size: 1.65rem; }
-  .panel-heading, th, td { padding-right: .85rem; padding-left: .85rem; }
+  .panel-heading, .panel-copy, .entry-grid, th, td { padding-right: .85rem; padding-left: .85rem; }
   .route-health-item { grid-template-columns: 1fr; gap: .6rem; }
   .route-table-wrap { overflow-x: scroll; }
   .route-table-wrap table { min-width: 900px; }

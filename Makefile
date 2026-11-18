@@ -6,16 +6,21 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
-.PHONY: all build server agent test test-race cover vet fmt fmt-check web-check docs-install docs-dev docs-build check integration-test docker-build clean
+.PHONY: all build server agent portloomctl release-portloomctl test test-race cover vet fmt fmt-check web-check docs-install docs-dev docs-build check integration-test cutover-e2e docker-build clean
 
 all: check build
-build: server agent
+build: server agent portloomctl
 server:
 	mkdir -p bin
 	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -ldflags '$(LDFLAGS)' -o bin/portloom-server ./cmd/server
 agent:
 	mkdir -p bin
 	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -ldflags '$(LDFLAGS)' -o bin/portloom-agent ./cmd/agent
+portloomctl:
+	mkdir -p bin
+	CGO_ENABLED=0 $(GO) build -trimpath -o bin/portloomctl ./cmd/portloomctl
+release-portloomctl:
+	scripts/build-release-portloomctl.sh "$(GO)"
 test:
 	$(GO) test ./...
 test-race:
@@ -50,6 +55,8 @@ integration-test:
 	./tests/beginner_compose_lifecycle_test.sh
 	./tests/installers_e2e_test.sh
 	./tests/two_host_flow_test.sh
+cutover-e2e:
+	./tests/cutover_e2e_test.sh
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -f Dockerfile.server -t portloom-server:$(VERSION) .
 	docker build --build-arg VERSION=$(VERSION) -f Dockerfile.agent -t portloom-agent:$(VERSION) .

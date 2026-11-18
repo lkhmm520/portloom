@@ -23,12 +23,12 @@ TCP/UDP stream edge 与原生 Web edge 独立；只要 `TM_TCP_EDGE_BIND_HOST` �
 
 路由的 `Public port` 留空表示主 edge，而不是固定 80/443。主 edge 为 8088/8443 时仍应留空；填写 8443 会被解释为额外 listener 并因占用主端口而拒绝。安装器成功提示会显示实际 WebUI URL 与有效 stream-edge 状态；仍应以 `.env`、`/api/v1/system` 和端到端测试共同验收。
 
-## 固定 v0.4 镜像并验收
+## 固定 v0.5 镜像并验收
 
 ```bash
 curl -fsSLo install-server.sh https://docs.look4i.com/install-server.sh
 chmod 0700 install-server.sh
-./install-server.sh --domain example.com --version 0.4.6
+./install-server.sh --domain example.com --version 0.5.0
 cd ~/.portloom/server
 docker compose --env-file .env -f compose.yml config
 docker compose --env-file .env -f compose.yml ps
@@ -56,7 +56,7 @@ compose.yml
 
 ## 上线检查
 
-1. `/api/v1/system` 返回 `0.4.6`，并显示预期的 `tcp_edge`、`udp_edge`、`web_port_edge`；
+1. `/api/v1/system` 返回 `0.5.0`，并显示预期的 `tcp_edge`、`udp_edge`、`web_port_edge`；
 2. HTTPS 管理入口与 HTTP 308 跳转正常；
 3. Agent 安装后无一次性令牌仍能重启和心跳；
 4. 分别测试 HTTPS、HTTP、TCP、UDP，以及至少一条路径/自定义端口路由；

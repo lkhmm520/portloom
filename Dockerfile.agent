@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.25.13
-FROM golang:${GO_VERSION}-bookworm AS build
+# Keep this version and multi-platform digest in sync with go.mod.
+FROM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
+ENV GOTOOLCHAIN=local
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN expected="go$(awk '$1 == "go" {print $2}' go.mod)" \
+    && actual="$(go env GOVERSION)" \
+    && { [ "$actual" = "$expected" ] || { echo "Go toolchain mismatch: expected $expected, found $actual" >&2; exit 1; }; } \
+    && go mod download
 COPY . .
 ARG VERSION=dev
 ARG COMMIT=unknown
